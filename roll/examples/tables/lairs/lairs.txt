@@ -1,0 +1,4 @@
+# paths relative to this file
+the old mill
+a cave (exits: `1d3`)
+`../monsters/monsters.txt` den

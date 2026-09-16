@@ -1,0 +1,2 @@
+ogre (`3d8` hp)
+troll

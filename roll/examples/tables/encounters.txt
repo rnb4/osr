@@ -1,0 +1,4 @@
+# Wandering encounters
+`3d2` goblins from `lairs/lairs.txt`
+wolves (`1d6`)
+A lone `monsters/monsters.txt`
