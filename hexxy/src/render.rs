@@ -1,6 +1,7 @@
 //! The `render` subcommand: a layered hex map SVG for a Foundry VTT scene, from a plain text grid.
 
 mod features;
+mod rivers;
 mod svg;
 mod symbols;
 
@@ -21,6 +22,7 @@ use crate::{
     warn,
 };
 use features::FeatureSpec;
+use rivers::{Channel, Style};
 use svg::{Num, Scene};
 use symbols::{Symbol, Symbols};
 
@@ -49,8 +51,16 @@ The map is typed staggered, so the text previews the drawing. '.' and space mean
 When not given, the palette and symbols directory are picked up from the current directory, and features from a \
 file named after the map, e.g. swamp-coast.features.txt beside swamp-coast.txt.
 
-Layers, in draw order: Terrain, Icons, Grid, Atlas, Rivers, Roads, Borders, Features, Labels, Coordinates. Rivers, \
-roads and borders run along hex edges, so those layers are left empty for drawing by hand.
+Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates. Roads and \
+borders run along hex edges, so those layers are left empty for drawing by hand.
+
+Rivers are drawn from a second staggered grid, MAP.rivers.txt beside the map, laid out the same way so the columns \
+that line up in the text line up on the map. Any non-blank character is a river hex, and --river-mouth (default 'M') \
+marks where a course ends: normally the sea or lake hex it empties into, so the river visibly reaches the water \
+rather than stopping short. Courses run through hex centres, crossing between hexes at the midpoint of the edge they \
+share, and widen with the square root of the hexes draining into them, so every tributary broadens the trunk it \
+joins. Adjacent river hexes always join into one network, so two separate rivers cannot run side by side. The Rivers \
+layer stays editable for drawing more by hand.
 
 The image has no margin, so hex (0,0) sits on the scene origin. The Foundry scene settings to use are printed after \
 rendering.";
@@ -87,6 +97,9 @@ pub struct Args {
 
     #[command(flatten)]
     atlas: AtlasArgs,
+
+    #[command(flatten)]
+    rivers: RiverArgs,
 
     #[command(flatten)]
     labels: LabelArgs,
@@ -168,6 +181,45 @@ struct AtlasArgs {
     /// Atlas line opacity
     #[arg(long, default_value_t = 0.85)]
     atlas_opacity: f64,
+}
+
+#[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Rivers")]
+struct RiverArgs {
+    /// Staggered grid of river hexes, laid out like the map; any non-blank character is a river hex [default:
+    /// MAP.rivers.txt beside the map, if present]
+    #[arg(long, value_name = "FILE", conflicts_with = "no_rivers")]
+    rivers: Option<PathBuf>,
+
+    /// Draw no rivers, even if a rivers file is present
+    #[arg(long)]
+    no_rivers: bool,
+
+    /// The character marking where a course ends, normally on the sea or lake hex it empties into
+    #[arg(long, value_name = "CHAR", default_value_t = 'M')]
+    river_mouth: char,
+
+    /// River colour
+    #[arg(long, default_value = "#78c7f5")]
+    river_color: String,
+
+    /// Width of a headwater as a fraction of hex width; a course widens with the square root of the hexes draining
+    /// into it
+    #[arg(long, default_value_t = 0.07)]
+    river_width: f64,
+
+    /// The widest a course is drawn, as a fraction of hex width
+    #[arg(long, default_value_t = 0.22)]
+    river_max_width: f64,
+
+    /// How far a course strays from the straight run between hex centres, as a fraction of hex radius; 0 draws it
+    /// perfectly regular. Which way it strays is picked by --seed
+    #[arg(long, default_value_t = 0.4)]
+    river_wander: f64,
+
+    /// River opacity
+    #[arg(long, default_value_t = 1.0)]
+    river_opacity: f64,
 }
 
 #[derive(clap::Args, Debug)]
@@ -283,7 +335,12 @@ pub fn run(args: Args) -> Result<(), String> {
     let features_path = if args.icons.no_features {
         None
     } else {
-        args.icons.features.clone().or_else(|| Some(features_file_for(&args.map)).filter(|path| path.is_file()))
+        args.icons.features.clone().or_else(|| Some(sidecar_for(&args.map, ".features.txt")).filter(|p| p.is_file()))
+    };
+    let rivers_path = if args.rivers.no_rivers {
+        None
+    } else {
+        args.rivers.rivers.clone().or_else(|| Some(sidecar_for(&args.map, ".rivers.txt")).filter(|p| p.is_file()))
     };
 
     let symbols = symbols_dir.map(|dir| symbols::load(&dir).map(|symbols| (dir, symbols))).transpose()?;
@@ -302,7 +359,30 @@ pub fn run(args: Args) -> Result<(), String> {
         }
     };
 
-    let scene = Scene { args: &args, layout, size, hexes: &map.hexes, icons: icons.as_ref(), features: &features };
+    let courses = match &rivers_path {
+        Some(path) => {
+            let style = Style {
+                channel: Channel {
+                    headwater: args.rivers.river_width * layout.hex_width(),
+                    max: args.rivers.river_max_width * layout.hex_width(),
+                },
+                wander: args.rivers.river_wander,
+                seed: args.seed,
+            };
+            rivers::read_rivers(path, &map, &layout, args.top, args.rivers.river_mouth, style)?
+        }
+        None => Vec::new(),
+    };
+
+    let scene = Scene {
+        args: &args,
+        layout,
+        size,
+        hexes: &map.hexes,
+        icons: icons.as_ref(),
+        features: &features,
+        rivers: &courses,
+    };
     fs::write(&args.output, scene.to_string())
         .map_err(|err| format!("could not write {}: {err}", args.output.display()))?;
 
@@ -325,10 +405,10 @@ pub fn run(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The features file that goes with a map: `swamp-coast.txt` has `swamp-coast.features.txt` beside it.
-fn features_file_for(map: &Path) -> PathBuf {
+/// A file that goes with a map: `swamp-coast.txt` has `swamp-coast.features.txt` beside it.
+fn sidecar_for(map: &Path, suffix: &str) -> PathBuf {
     let mut name = map.file_stem().unwrap_or(map.as_os_str()).to_os_string();
-    name.push(".features.txt");
+    name.push(suffix);
     map.with_file_name(name)
 }
 
@@ -399,12 +479,13 @@ fn print_foundry_settings(args: &Args, map: &Map, size: Point) {
 mod tests {
     use std::path::Path;
 
-    use super::{Axial, features_file_for, parse_atlas_offset, variant};
+    use super::{Axial, parse_atlas_offset, sidecar_for, variant};
 
     #[test]
-    fn features_files_are_named_after_their_map() {
-        assert_eq!(features_file_for(Path::new("swamp-coast.txt")), Path::new("swamp-coast.features.txt"));
-        assert_eq!(features_file_for(Path::new("maps/atlas")), Path::new("maps/atlas.features.txt"));
+    fn sidecars_are_named_after_their_map() {
+        assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".features.txt"), Path::new("swamp-coast.features.txt"));
+        assert_eq!(sidecar_for(Path::new("maps/atlas"), ".features.txt"), Path::new("maps/atlas.features.txt"));
+        assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".rivers.txt"), Path::new("swamp-coast.rivers.txt"));
     }
 
     #[test]

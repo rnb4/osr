@@ -43,6 +43,28 @@ impl Point {
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
+
+    /// The point halfway to `other`.
+    pub fn midpoint(self, other: Point) -> Point {
+        Point::new((self.x + other.x) / 2.0, (self.y + other.y) / 2.0)
+    }
+
+    /// This point turned a quarter turn, for stepping sideways off a direction.
+    pub fn perpendicular(self) -> Point {
+        Point::new(-self.y, self.x)
+    }
+
+    pub fn length(self) -> f64 {
+        self.x.hypot(self.y)
+    }
+
+    /// This point scaled to unit length, or the origin if it has no length to scale.
+    pub fn normalised(self) -> Point {
+        match self.length() {
+            0.0 => Point::default(),
+            length => self * (1.0 / length),
+        }
+    }
 }
 
 impl Add for Point {
@@ -58,6 +80,14 @@ impl Sub for Point {
 
     fn sub(self, other: Point) -> Point {
         Point::new(self.x - other.x, self.y - other.y)
+    }
+}
+
+impl Mul<f64> for Point {
+    type Output = Point;
+
+    fn mul(self, factor: f64) -> Point {
+        Point::new(self.x * factor, self.y * factor)
     }
 }
 
@@ -233,6 +263,21 @@ mod tests {
                 let theirs = layout.corners(layout.centre(step), 1.0);
                 let j = (i + 3) % 6;
                 assert!(close(corners[i], theirs[(j + 1) % 6]) && close(corners[(i + 1) % 6], theirs[j]), "{top} {i}");
+            }
+        }
+    }
+
+    /// Anything running from hex to hex crosses their shared edge at its midpoint, and that midpoint is just the point
+    /// halfway between the two centres, so a course can be laid out without ever naming an edge.
+    #[test]
+    fn neighbour_centres_meet_at_their_shared_edge() {
+        for top in [Top::Pointy, Top::Flat] {
+            let (layout, _) = Layout::fit(top, 10.0, [Axial::default()]);
+            let centre = Axial::default();
+            let corners = layout.corners(layout.centre(centre), 1.0);
+            for (i, step) in layout.directions().into_iter().enumerate() {
+                let edge = corners[i].midpoint(corners[(i + 1) % 6]);
+                assert!(close(edge, layout.centre(centre).midpoint(layout.centre(centre + step))), "{top} {i}");
             }
         }
     }

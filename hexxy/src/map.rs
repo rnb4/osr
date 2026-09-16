@@ -104,13 +104,24 @@ pub fn parse_palette(text: &str, file: impl Display) -> Result<Palette, String> 
     Ok(palette)
 }
 
-/// Parses a staggered map of terrain characters.
+/// A non-blank character in a staggered grid, and the hex it lands on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cell {
+    pub coord: Coord,
+    pub axial: Axial,
+    pub ch: char,
+    pub line: usize,
+}
+
+/// Parses a staggered grid of characters into the hexes they land on.
 ///
 /// A character's position in its line and the line's index are its hex's doubled coordinates: pointy-top hexes step 2
 /// across a row, and flat-top hexes step 2 down a column, split over two lines.
-pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: Top) -> Result<Map<'a>, String> {
-    let mut hexes = Vec::new();
-    let mut unknown: BTreeMap<char, Vec<String>> = BTreeMap::new();
+///
+/// Returns the cells and whether the image's first row (pointy-top) or column (flat-top) is the one shifted by half a
+/// hex. Every staggered file the tool reads comes through here, so the layouts cannot drift apart.
+pub fn parse_grid(text: &str, file: impl Display, top: Top) -> Result<(Vec<Cell>, bool), String> {
+    let mut cells = Vec::new();
     // Pointy-top rows alternate between indented and not; this records which parity of row is indented.
     let mut stagger = None;
 
@@ -142,10 +153,7 @@ pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: 
                     continue;
                 }
             };
-            match palette.get(&ch) {
-                Some(terrain) => hexes.push(Hex { coord, axial, terrain }),
-                None => unknown.entry(ch).or_default().push(format!("{file}:{n} col {}", coord.col)),
-            }
+            cells.push(Cell { coord, axial, ch, line: n as usize });
         }
 
         if off_grid {
@@ -154,6 +162,29 @@ pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: 
                 Top::Flat => "hexes sit 4 characters apart, with odd lines indented by 2",
             };
             warn(format_args!("{file}:{n}: ignored characters between hexes; {layout}"));
+        }
+    }
+
+    let starts_offset = match top {
+        Top::Pointy => {
+            let first_row = cells.iter().map(|cell| cell.coord.row).min();
+            first_row.zip(stagger).is_some_and(|(row, parity)| (row + parity) % 2 == 1)
+        }
+        Top::Flat => cells.iter().map(|cell| cell.coord.col).min().is_some_and(|col| col % 2 == 1),
+    };
+    Ok((cells, starts_offset))
+}
+
+/// Parses a staggered map of terrain characters, naming each one from the palette.
+pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: Top) -> Result<Map<'a>, String> {
+    let (cells, starts_offset) = parse_grid(text, &file, top)?;
+    let mut hexes = Vec::new();
+    let mut unknown: BTreeMap<char, Vec<String>> = BTreeMap::new();
+
+    for cell in cells {
+        match palette.get(&cell.ch) {
+            Some(terrain) => hexes.push(Hex { coord: cell.coord, axial: cell.axial, terrain }),
+            None => unknown.entry(cell.ch).or_default().push(format!("{file}:{} col {}", cell.line, cell.coord.col)),
         }
     }
 
@@ -171,13 +202,6 @@ pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: 
         return Err(format!("unknown terrain characters (add them to the palette):\n{}", lines.join("\n")));
     }
 
-    let starts_offset = match top {
-        Top::Pointy => {
-            let first_row = hexes.iter().map(|hex| hex.coord.row).min();
-            first_row.zip(stagger).is_some_and(|(row, parity)| (row + parity) % 2 == 1)
-        }
-        Top::Flat => hexes.iter().map(|hex| hex.coord.col).min().is_some_and(|col| col % 2 == 1),
-    };
     if hexes.is_empty() {
         return Err(format!("{file}: map has no hexes"));
     }

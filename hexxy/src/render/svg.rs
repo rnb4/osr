@@ -7,7 +7,7 @@ use std::{
 
 use quick_xml::escape::escape;
 
-use super::{ATLAS_SCALE, Args, CoordsAlign, Feature, Icons, symbols::SODIPODI_NS};
+use super::{ATLAS_SCALE, Args, CoordsAlign, Feature, Icons, rivers::Course, symbols::SODIPODI_NS};
 use crate::{
     hex::{Axial, Layout, Point},
     map::{Hex, Terrain},
@@ -17,9 +17,11 @@ const SVG_NS: &str = "http://www.w3.org/2000/svg";
 const INKSCAPE_NS: &str = "http://www.inkscape.org/namespaces/inkscape";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 
-/// Layers for work that runs along hex edges, which the generator leaves to be drawn by hand.
-const EMPTY_LAYERS: [(&str, &str); 3] =
-    [("Rivers", "layer-rivers"), ("Roads", "layer-roads"), ("Borders", "layer-borders")];
+/// Layers for work that runs along hex edges, which the generator leaves to be drawn by hand. Roads join the rivers
+/// under the grid, so the hex outlines stay unbroken over them; borders sit above the grid, drawn across the map
+/// rather than following what is under them.
+const ROADS_LAYER: (&str, &str) = ("Roads", "layer-roads");
+const BORDERS_LAYER: (&str, &str) = ("Borders", "layer-borders");
 
 pub struct Scene<'a> {
     pub args: &'a Args,
@@ -28,6 +30,7 @@ pub struct Scene<'a> {
     pub hexes: &'a [Hex<'a>],
     pub icons: Option<&'a Icons<'a>>,
     pub features: &'a [Feature],
+    pub rivers: &'a [Course],
 }
 
 /// A length rounded to 2 decimal places.
@@ -74,6 +77,12 @@ fn close_layer(f: &mut Formatter) -> fmt::Result {
     writeln!(f, "  </g>")
 }
 
+/// A named layer with nothing in it, waiting for work drawn by hand.
+fn empty_layer(f: &mut Formatter, (label, id): (&str, &str)) -> fmt::Result {
+    open_layer(f, label, id)?;
+    close_layer(f)
+}
+
 fn write_icon_use(f: &mut Formatter, id: usize, centre: Point, size: f64) -> fmt::Result {
     let (x, y, size) = (Num(centre.x - size / 2.0), Num(centre.y - size / 2.0), Num(size));
     writeln!(f, r##"    <use href="#icon-{id}" x="{x}" y="{y}" width="{size}" height="{size}"/>"##)
@@ -96,16 +105,16 @@ impl Display for Scene<'_> {
         if let Some(icons) = self.icons {
             self.write_icons(f, icons)?;
         }
+        // Courses and roads run under the grid, so the hex outlines stay unbroken where one crosses them.
+        self.write_rivers(f)?;
+        empty_layer(f, ROADS_LAYER)?;
         if !self.args.grid.no_grid {
             self.write_grid(f)?;
         }
         if let Some(offset) = self.args.atlas.atlas {
             self.write_atlas(f, offset)?;
         }
-        for (label, id) in EMPTY_LAYERS {
-            open_layer(f, label, id)?;
-            close_layer(f)?;
-        }
+        empty_layer(f, BORDERS_LAYER)?;
         self.write_features(f)?;
         self.write_labels(f)?;
         if let Some(align) = self.args.coords.coords {
@@ -225,6 +234,30 @@ impl Scene<'_> {
             Num(width),
             Num(atlas.atlas_opacity),
         )?;
+        close_layer(f)
+    }
+
+    /// Water courses, each a filled outline running from a source to a mouth. The layer is opened even when there are
+    /// none, so there is always somewhere to draw more by hand.
+    ///
+    /// Courses sharing a trunk overlap along it, which one flat colour hides, so confluences need no seam of their own.
+    fn write_rivers(&self, f: &mut Formatter) -> fmt::Result {
+        let rivers = &self.args.rivers;
+        open_layer(f, "Rivers", "layer-rivers")?;
+        if !self.rivers.is_empty() {
+            writeln!(
+                f,
+                r#"    <g fill="{}" fill-opacity="{}" stroke="none" id="rivers">"#,
+                escape(&rivers.river_color),
+                Num(rivers.river_opacity),
+            )?;
+            for course in self.rivers {
+                write!(f, r#"      <path d="M"#)?;
+                write_separated(f, &course.outline, "L")?;
+                writeln!(f, r#"Z"/>"#)?;
+            }
+            writeln!(f, "    </g>")?;
+        }
         close_layer(f)
     }
 
