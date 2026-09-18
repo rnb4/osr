@@ -7,7 +7,7 @@ use std::{
 
 use quick_xml::escape::escape;
 
-use super::{ATLAS_SCALE, Args, CoordsAlign, Feature, Icons, rivers::Course, symbols::SODIPODI_NS};
+use super::{ATLAS_SCALE, Args, CoordsAlign, Feature, Icons, rivers::Course, roads::Road, symbols::SODIPODI_NS};
 use crate::{
     hex::{Axial, Layout, Point},
     map::{Hex, Terrain},
@@ -17,10 +17,8 @@ const SVG_NS: &str = "http://www.w3.org/2000/svg";
 const INKSCAPE_NS: &str = "http://www.inkscape.org/namespaces/inkscape";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 
-/// Layers for work that runs along hex edges, which the generator leaves to be drawn by hand. Roads join the rivers
-/// under the grid, so the hex outlines stay unbroken over them; borders sit above the grid, drawn across the map
-/// rather than following what is under them.
-const ROADS_LAYER: (&str, &str) = ("Roads", "layer-roads");
+/// Borders sit above the grid, drawn across the map rather than following what is under them, and the generator
+/// leaves them to be drawn by hand.
 const BORDERS_LAYER: (&str, &str) = ("Borders", "layer-borders");
 
 pub struct Scene<'a> {
@@ -31,6 +29,7 @@ pub struct Scene<'a> {
     pub icons: Option<&'a Icons<'a>>,
     pub features: &'a [Feature],
     pub rivers: &'a [Course],
+    pub roads: &'a [Road],
 }
 
 /// A length rounded to 2 decimal places.
@@ -107,7 +106,7 @@ impl Display for Scene<'_> {
         }
         // Courses and roads run under the grid, so the hex outlines stay unbroken where one crosses them.
         self.write_rivers(f)?;
-        empty_layer(f, ROADS_LAYER)?;
+        self.write_roads(f)?;
         if !self.args.grid.no_grid {
             self.write_grid(f)?;
         }
@@ -255,6 +254,47 @@ impl Scene<'_> {
                 write!(f, r#"      <path d="M"#)?;
                 write_separated(f, &course.outline, "L")?;
                 writeln!(f, r#"Z"/>"#)?;
+            }
+            writeln!(f, "    </g>")?;
+        }
+        close_layer(f)
+    }
+
+    /// Ways, grouped by the kind they are drawn in so a whole class can be selected at once, and stroked rather than
+    /// filled: one width along a run is what lets a trail be dashed. A run is one path, so its dashes carry the length
+    /// of it instead of restarting at every hex. The layer is opened even when there are none, so there is always
+    /// somewhere to draw more by hand.
+    fn write_roads(&self, f: &mut Formatter) -> fmt::Result {
+        let roads = &self.args.roads;
+        let scale = self.layout.hex_width();
+
+        open_layer(f, "Roads", "layer-roads")?;
+        for (class, kind) in roads.road_class.iter().enumerate() {
+            let ways: Vec<&Road> = self.roads.iter().filter(|road| road.class == class).collect();
+            if ways.is_empty() {
+                continue;
+            }
+            let id: String = kind.name.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+            write!(
+                f,
+                r#"    <g fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" stroke-linejoin="round""#,
+                escape(&kind.color),
+                Num(kind.width * scale),
+                Num(roads.road_opacity),
+            )?;
+            if !kind.dash.is_empty() {
+                write!(f, r#" stroke-dasharray=""#)?;
+                write_separated(f, kind.dash.iter().map(|&length| Num(length * scale)), ",")?;
+                write!(f, r#"""#)?;
+            }
+            writeln!(f, r#" inkscape:label="{}" id="road-{}">"#, escape(&kind.name), id.trim_matches('-'))?;
+
+            for road in ways {
+                write!(f, r#"      <path d="M{}"#, road.anchors[0])?;
+                for (control, anchor) in road.controls.iter().zip(&road.anchors[1..]) {
+                    write!(f, "Q{control} {anchor}")?;
+                }
+                writeln!(f, r#""/>"#)?;
             }
             writeln!(f, "    </g>")?;
         }

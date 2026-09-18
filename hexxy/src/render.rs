@@ -1,7 +1,9 @@
 //! The `render` subcommand: a layered hex map SVG for a Foundry VTT scene, from a plain text grid.
 
+mod course;
 mod features;
 mod rivers;
+mod roads;
 mod svg;
 mod symbols;
 
@@ -21,8 +23,10 @@ use crate::{
     random::stable_rng,
     warn,
 };
+use course::Wander;
 use features::FeatureSpec;
-use rivers::{Channel, Style};
+use rivers::Channel;
+use roads::Class;
 use svg::{Num, Scene};
 use symbols::{Symbol, Symbols};
 
@@ -51,8 +55,8 @@ The map is typed staggered, so the text previews the drawing. '.' and space mean
 When not given, the palette and symbols directory are picked up from the current directory, and features from a \
 file named after the map, e.g. swamp-coast.features.txt beside swamp-coast.txt.
 
-Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates. Roads and \
-borders run along hex edges, so those layers are left empty for drawing by hand.
+Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates. Borders are \
+drawn across the map rather than following what is under them, so that layer is left empty for drawing by hand.
 
 Rivers are drawn from a second staggered grid, MAP.rivers.txt beside the map, laid out the same way so the columns \
 that line up in the text line up on the map. Any non-blank character is a river hex, and --river-mouth (default 'M') \
@@ -61,6 +65,12 @@ rather than stopping short. Courses run through hex centres, crossing between he
 share, and widen with the square root of the hexes draining into them, so every tributary broadens the trunk it \
 joins. Adjacent river hexes always join into one network, so two separate rivers cannot run side by side. The Rivers \
 layer stays editable for drawing more by hand.
+
+Roads are drawn from a third staggered grid, MAP.roads.txt beside the map, and run through hex centres the same way. \
+Each character names a kind of way given by --road-class, 'R' road and 't' trail unless others are given, and every \
+pair of neighbouring road hexes is joined. Where two kinds meet, the narrower one is drawn up to the centre of the \
+wider one's hex, so a trail joining a road meets it without a seam. A way is stroked at one width, so unlike a river \
+it can be dashed, and a whole run is one path so the dashes carry along it.
 
 The image has no margin, so hex (0,0) sits on the scene origin. The Foundry scene settings to use are printed after \
 rendering.";
@@ -100,6 +110,9 @@ pub struct Args {
 
     #[command(flatten)]
     rivers: RiverArgs,
+
+    #[command(flatten)]
+    roads: RoadArgs,
 
     #[command(flatten)]
     labels: LabelArgs,
@@ -223,6 +236,39 @@ struct RiverArgs {
 }
 
 #[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Roads")]
+struct RoadArgs {
+    /// Staggered grid of road hexes, laid out like the map; each character names a road class [default:
+    /// MAP.roads.txt beside the map, if present]
+    #[arg(long, value_name = "FILE", conflicts_with = "no_roads")]
+    roads: Option<PathBuf>,
+
+    /// Draw no roads, even if a roads file is present
+    #[arg(long)]
+    no_roads: bool,
+
+    /// A kind of way, as '<char> <color> <width> <dash> [name]', repeatable. The width and the dash lengths are
+    /// fractions of hex width, and a dash of 'none' draws a solid line. Where two kinds meet, the narrower one is
+    /// drawn up to the centre of the wider one's hex
+    #[arg(
+        long,
+        value_name = "SPEC",
+        value_parser = roads::parse_class,
+        default_values = ["R #6b4f2a 0.09 none road", "t #6b4f2a 0.05 0.18,0.12 trail"],
+    )]
+    road_class: Vec<Class>,
+
+    /// How far a road strays from the straight run between hex centres, as a fraction of hex radius; 0 draws it
+    /// perfectly regular. Which way it strays is picked by --seed
+    #[arg(long, default_value_t = 0.25)]
+    road_wander: f64,
+
+    /// Road opacity
+    #[arg(long, default_value_t = 1.0)]
+    road_opacity: f64,
+}
+
+#[derive(clap::Args, Debug)]
 #[command(next_help_heading = "Labels")]
 struct LabelArgs {
     /// Feature label colour
@@ -342,6 +388,11 @@ pub fn run(args: Args) -> Result<(), String> {
     } else {
         args.rivers.rivers.clone().or_else(|| Some(sidecar_for(&args.map, ".rivers.txt")).filter(|p| p.is_file()))
     };
+    let roads_path = if args.roads.no_roads {
+        None
+    } else {
+        args.roads.roads.clone().or_else(|| Some(sidecar_for(&args.map, ".roads.txt")).filter(|p| p.is_file()))
+    };
 
     let symbols = symbols_dir.map(|dir| symbols::load(&dir).map(|symbols| (dir, symbols))).transpose()?;
     let specs = match &features_path {
@@ -361,15 +412,30 @@ pub fn run(args: Args) -> Result<(), String> {
 
     let courses = match &rivers_path {
         Some(path) => {
-            let style = Style {
-                channel: Channel {
-                    headwater: args.rivers.river_width * layout.hex_width(),
-                    max: args.rivers.river_max_width * layout.hex_width(),
-                },
-                wander: args.rivers.river_wander,
-                seed: args.seed,
+            let channel = Channel {
+                headwater: args.rivers.river_width * layout.hex_width(),
+                max: args.rivers.river_max_width * layout.hex_width(),
             };
-            rivers::read_rivers(path, &map, &layout, args.top, args.rivers.river_mouth, style)?
+            let wander = Wander {
+                amount: args.rivers.river_wander,
+                seed: args.seed,
+                crossing_tag: rivers::CROSSING,
+                bend_tag: rivers::BEND,
+            };
+            rivers::read_rivers(path, &map, &layout, args.top, args.rivers.river_mouth, channel, &wander)?
+        }
+        None => Vec::new(),
+    };
+
+    let ways = match &roads_path {
+        Some(path) => {
+            let wander = Wander {
+                amount: args.roads.road_wander,
+                seed: args.seed,
+                crossing_tag: roads::CROSSING,
+                bend_tag: roads::BEND,
+            };
+            roads::read_roads(path, &map, &layout, args.top, &args.roads.road_class, &wander)?
         }
         None => Vec::new(),
     };
@@ -382,6 +448,7 @@ pub fn run(args: Args) -> Result<(), String> {
         icons: icons.as_ref(),
         features: &features,
         rivers: &courses,
+        roads: &ways,
     };
     fs::write(&args.output, scene.to_string())
         .map_err(|err| format!("could not write {}: {err}", args.output.display()))?;
@@ -486,6 +553,7 @@ mod tests {
         assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".features.txt"), Path::new("swamp-coast.features.txt"));
         assert_eq!(sidecar_for(Path::new("maps/atlas"), ".features.txt"), Path::new("maps/atlas.features.txt"));
         assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".rivers.txt"), Path::new("swamp-coast.rivers.txt"));
+        assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".roads.txt"), Path::new("swamp-coast.roads.txt"));
     }
 
     #[test]

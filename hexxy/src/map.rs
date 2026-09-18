@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Characters meaning "no hex here".
-const BLANKS: [char; 2] = ['.', ' '];
+pub const BLANKS: [char; 2] = ['.', ' '];
 
 #[derive(Debug)]
 pub struct Terrain {
@@ -206,6 +206,36 @@ pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: 
         return Err(format!("{file}: map has no hexes"));
     }
     Ok(Map { hexes, starts_offset })
+}
+
+/// Parses a staggered grid laid out like `map`, and places every cell on the hex the map put there.
+///
+/// Rivers and roads are both typed as their own grid beside the map, and both have to land on the map's
+/// own hexes: a grid that is out of step fails here rather than drawing the whole network half a hex out.
+pub fn place_grid(text: &str, file: impl Display, map: &Map, top: Top) -> Result<Vec<(Axial, Cell)>, String> {
+    let (cells, _) = parse_grid(text, &file, top)?;
+    let axial_of: HashMap<Coord, Axial> = map.hexes.iter().map(|hex| (hex.coord, hex.axial)).collect();
+
+    cells
+        .into_iter()
+        .map(|cell| {
+            let axial = *axial_of
+                .get(&cell.coord)
+                .ok_or_else(|| format!("{file}:{}: no hex at {} on the map", cell.line, cell.coord))?;
+            // Both grids work out an axial for the coordinate they wrote, and they only agree when the
+            // rows are staggered the same way. A grid indented by an odd number of spaces still lands
+            // every hex on the map, just not the hexes it looks like it names, so this is what catches
+            // it; the map's own axial is the one used from here on.
+            if axial != cell.axial {
+                return Err(format!(
+                    "{file}:{}: the grid is staggered the other way from the map, putting {} half a hex out; check the \
+                     leading spaces",
+                    cell.line, cell.coord
+                ));
+            }
+            Ok((axial, cell))
+        })
+        .collect()
 }
 
 /// Writes `cells` as a staggered map that [`parse_map`] reads back, each hex drawn with its character.

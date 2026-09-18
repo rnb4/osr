@@ -1,27 +1,22 @@
 //! Reading the rivers grid and drawing the water courses it describes.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    f64::consts::TAU,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Display,
     fs,
     path::Path,
 };
 
+use super::course::{self, Wander};
 use crate::{
     hex::{Axial, Layout, Point, Top},
-    map::{Coord, Map, parse_grid},
-    random::stable_rng,
+    map::{self, Coord, Map},
     warn,
 };
 
-/// Samples per curve segment when a course is flattened into its outline. Six is enough that the
-/// bends read as smooth at any grid size this tool is used at.
-const STEPS: usize = 6;
-
-/// Tags keeping the two kinds of straying apart in the seeded randomness.
-const CROSSING: u64 = 10;
-const BEND: u64 = 11;
+/// Tags keeping rivers' straying apart from the roads crossing them; see [`Wander`].
+pub const CROSSING: u64 = 10;
+pub const BEND: u64 = 11;
 
 /// How wide a course is drawn, in px.
 #[derive(Clone, Copy, Debug)]
@@ -40,53 +35,6 @@ impl Channel {
     /// through, which growing in step with the catchment would.
     fn width(&self, drains: u32) -> f64 {
         (self.headwater * f64::from(drains).sqrt()).min(self.max)
-    }
-}
-
-/// How courses are drawn.
-#[derive(Clone, Copy, Debug)]
-pub struct Style {
-    pub channel: Channel,
-    /// How far a course strays from the regular lattice, as a fraction of the hex radius. Zero runs
-    /// every course dead straight between hex centres, which reads as drawn by a machine.
-    pub wander: f64,
-    /// Picks which way each course strays, so the same seed always draws the same rivers.
-    pub seed: u64,
-}
-
-impl Style {
-    /// Where a course crosses out of `hex` into `next`.
-    ///
-    /// Keyed on the pair of hexes rather than on the course, so every course crossing here strays
-    /// the same way. The trunk below a confluence is drawn once per source above it, and those
-    /// copies only stay exactly on top of each other while they agree about this.
-    fn crossing(&self, layout: &Layout, hex: Axial, next: Axial) -> Point {
-        let (from, to) = (layout.centre(hex), layout.centre(next));
-        let middle = from.midpoint(to);
-        if self.wander <= 0.0 {
-            return middle;
-        }
-        let (low, high) = if hex < next { (hex, next) } else { (next, hex) };
-        let key = low.key().wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ high.key();
-        let shift = stable_rng(self.seed, CROSSING, key).f64() * 2.0 - 1.0;
-        // The shared edge runs across the line joining the two centres and is one radius long, so
-        // half a radius is as far as a crossing could move before reaching a corner.
-        middle + (to - from).perpendicular().normalised() * (shift * self.wander * layout.radius() / 2.0)
-    }
-
-    /// The point inside `hex` that a course bends around, off the true centre.
-    ///
-    /// Keyed on the hex for the same reason as [`Style::crossing`].
-    fn bend(&self, layout: &Layout, hex: Axial) -> Point {
-        let centre = layout.centre(hex);
-        if self.wander <= 0.0 {
-            return centre;
-        }
-        let mut rng = stable_rng(self.seed, BEND, hex.key());
-        let angle = rng.f64() * TAU;
-        // Kept well inside the hex: the bend only shapes the curve, so a little goes a long way.
-        let reach = rng.f64() * self.wander * layout.radius() / 4.0;
-        centre + Point::new(angle.cos(), angle.sin()) * reach
     }
 }
 
@@ -114,13 +62,15 @@ pub fn read_rivers(
     layout: &Layout,
     top: Top,
     mouth: char,
-    style: Style,
+    channel: Channel,
+    wander: &Wander,
 ) -> Result<Vec<Course>, String> {
     let text = fs::read_to_string(path).map_err(|err| format!("could not read rivers {}: {err}", path.display()))?;
-    parse_rivers(&text, path.display(), map, layout, top, mouth, style)
+    parse_rivers(&text, path.display(), map, layout, top, mouth, channel, wander)
 }
 
 /// Parses a staggered grid of river hexes and draws each source's course down to its mouth.
+#[allow(clippy::too_many_arguments)]
 fn parse_rivers(
     text: &str,
     file: impl Display,
@@ -128,7 +78,8 @@ fn parse_rivers(
     layout: &Layout,
     top: Top,
     mouth: char,
-    style: Style,
+    channel: Channel,
+    wander: &Wander,
 ) -> Result<Vec<Course>, String> {
     let network = network(text, &file, map, top, mouth)?;
     if network.coords.is_empty() {
@@ -153,35 +104,19 @@ fn parse_rivers(
             warn(format_args!("{file}: the river hex at {coord} stands alone, so nothing is drawn for it"));
             continue;
         }
-        courses.push(Course { outline: outline(&centreline(&chain, layout, &drains, style)) });
+        let line = course::centreline(&chain, layout, |hex| channel.width(drains[&hex]), wander);
+        courses.push(Course { outline: course::outline(&line) });
     }
     Ok(courses)
 }
 
 /// Reads the grid and works out which way the water runs.
 fn network(text: &str, file: impl Display, map: &Map, top: Top, mouth: char) -> Result<Network, String> {
-    let (cells, _) = parse_grid(text, &file, top)?;
-
     // Every river hex takes the map's own axial for its coordinate, so a rivers grid that is out of
-    // step with the map fails here rather than drawing the whole network half a hex out.
-    let axial_of: HashMap<Coord, Axial> = map.hexes.iter().map(|hex| (hex.coord, hex.axial)).collect();
+    // step with the map fails there rather than drawing the whole network half a hex out.
     let mut coords: BTreeMap<Axial, Coord> = BTreeMap::new();
     let mut mouths: BTreeSet<Axial> = BTreeSet::new();
-    for cell in cells {
-        let axial = *axial_of
-            .get(&cell.coord)
-            .ok_or_else(|| format!("{file}:{}: no hex at {} on the map", cell.line, cell.coord))?;
-        // Both grids work out an axial for the coordinate they wrote, and they only agree when the
-        // rows are staggered the same way. A grid indented by an odd number of spaces still lands
-        // every hex on the map, just not the hexes it looks like it names, so this is what catches
-        // it; the map's own axial is the one used from here on.
-        if axial != cell.axial {
-            return Err(format!(
-                "{file}:{}: the grid is staggered the other way from the map, putting {} half a hex out; check the \
-                 leading spaces",
-                cell.line, cell.coord
-            ));
-        }
+    for (axial, cell) in map::place_grid(text, &file, map, top)? {
         coords.insert(axial, cell.coord);
         if cell.ch == mouth {
             mouths.insert(axial);
@@ -239,96 +174,9 @@ fn drainage(order: &[Axial], downstream: &BTreeMap<Axial, Axial>) -> BTreeMap<Ax
     drains
 }
 
-/// The curve a course follows: the anchors it passes through, the control point bending it between
-/// each pair, and the channel width at each anchor.
-///
-/// A course crosses each hex from one edge to another, so putting the anchors on the crossings and
-/// the controls on the hex centres gives the rounded bends hex rivers are drawn with, with no
-/// smoothing pass of its own. Neighbouring hex centres sit either side of their shared edge's
-/// midpoint, so a crossing starts out as the point halfway between them; [`Style`] then moves it
-/// along the edge, and the centre it bends around off the centre, to keep a course off the lattice.
-struct Centreline {
-    anchors: Vec<Point>,
-    /// One shorter than `anchors`: the control for the curve from anchor `i` to anchor `i + 1`.
-    controls: Vec<Point>,
-    widths: Vec<f64>,
-}
-
-fn centreline(chain: &[Axial], layout: &Layout, drains: &BTreeMap<Axial, u32>, style: Style) -> Centreline {
-    let width = |hex: Axial| style.channel.width(drains[&hex]);
-    let source = style.bend(layout, chain[0]);
-
-    // A source comes to a point, so its two banks meet there.
-    let mut anchors = vec![source];
-    let mut widths = vec![0.0];
-    let mut controls = Vec::new();
-
-    for (i, pair) in chain.windows(2).enumerate() {
-        let (hex, next) = (pair[0], pair[1]);
-        let crossing = style.crossing(layout, hex, next);
-        // The first run leaves the source's own centre, so it has no bend to make; later ones turn
-        // around the hex they cross.
-        controls.push(if i == 0 { source.midpoint(crossing) } else { style.bend(layout, hex) });
-        anchors.push(crossing);
-        widths.push((width(hex) + width(next)) / 2.0);
-    }
-
-    // The last run crosses into the mouth hex and stops there.
-    let last = *chain.last().expect("a course has at least two hexes");
-    let end = style.bend(layout, last);
-    controls.push(anchors.last().expect("the loop pushed an anchor").midpoint(end));
-    anchors.push(end);
-    widths.push(width(last));
-
-    Centreline { anchors, controls, widths }
-}
-
-/// The closed outline of a course: its curve sampled, each sample pushed out to both banks, and the
-/// right bank walked back to close the shape.
-///
-/// Offsetting the curve analytically would give a shorter path, but it is fiddly to get right at
-/// tight bends; sampling first is robust, and the extra points cost little beside the terrain
-/// polygons already in the file.
-fn outline(line: &Centreline) -> Vec<Point> {
-    let mut samples: Vec<(Point, f64)> = Vec::with_capacity(line.controls.len() * STEPS + 1);
-    for (i, &control) in line.controls.iter().enumerate() {
-        let (from, to) = (line.anchors[i], line.anchors[i + 1]);
-        let (start, end) = (line.widths[i], line.widths[i + 1]);
-        // A segment's last sample is the next segment's first, so it is left to that one.
-        for step in 0..STEPS {
-            let t = f64::from(step as u32) / f64::from(STEPS as u32);
-            samples.push((quadratic(from, control, to, t), start + (end - start) * t));
-        }
-    }
-    samples.push((
-        *line.anchors.last().expect("a centreline has anchors"),
-        *line.widths.last().expect("a centreline has widths"),
-    ));
-
-    let mut left = Vec::with_capacity(samples.len() * 2);
-    let mut right = Vec::with_capacity(samples.len());
-    for (i, &(point, width)) in samples.iter().enumerate() {
-        // A sample at either end has only one neighbour to take its direction from.
-        let before = samples[i.saturating_sub(1)].0;
-        let after = samples[(i + 1).min(samples.len() - 1)].0;
-        let offset = (after - before).perpendicular().normalised() * (width / 2.0);
-        left.push(point + offset);
-        right.push(point - offset);
-    }
-    right.reverse();
-    left.append(&mut right);
-    left
-}
-
-/// A point along the quadratic curve running from `from` to `to`, bending around `control`.
-fn quadratic(from: Point, control: Point, to: Point, t: f64) -> Point {
-    let u = 1.0 - t;
-    from * (u * u) + control * (2.0 * u * t) + to * (t * t)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Channel, Network, Style, centreline, drainage, network, parse_rivers};
+    use super::{Channel, Network, Wander, course, drainage, network, parse_rivers};
     use crate::{
         hex::{Axial, Layout, Point, Top},
         map::{Map, Palette, parse_map, parse_palette},
@@ -344,6 +192,8 @@ mod tests {
     // off the trunk as a second, stub course rather than joining the chain.
     const RIVERS: &str = "r . . .\n r . . .\n. r r M\n";
 
+    const CHANNEL: Channel = Channel { headwater: 2.0, max: 100.0 };
+
     fn palette() -> Palette {
         parse_palette(PALETTE, "p").unwrap()
     }
@@ -352,8 +202,18 @@ mod tests {
         Layout::fit(Top::Pointy, 10.0, map.hexes.iter().map(|hex| hex.axial)).0
     }
 
-    fn style(wander: f64) -> Style {
-        Style { channel: Channel { headwater: 2.0, max: 100.0 }, wander, seed: 7 }
+    fn wander(amount: f64) -> Wander {
+        Wander { amount, seed: 7, crossing_tag: super::CROSSING, bend_tag: super::BEND }
+    }
+
+    /// The course's curve, the way [`parse_rivers`] lays it out.
+    fn centreline(
+        chain: &[Axial],
+        layout: &Layout,
+        drains: &std::collections::BTreeMap<Axial, u32>,
+        wander: &Wander,
+    ) -> course::Centreline {
+        course::centreline(chain, layout, |hex| CHANNEL.width(drains[&hex]), wander)
     }
 
     /// Every hex a course runs through, from its source down to its mouth.
@@ -419,8 +279,7 @@ mod tests {
         assert!(at(2, 2) > at(1, 2), "{} should beat {}", at(2, 2), at(1, 2));
         assert_eq!(at(3, 2), net.coords.len() as u32);
 
-        let channel = Channel { headwater: 2.0, max: 100.0 };
-        assert!(channel.width(at(3, 2)) > channel.width(at(0, 0)));
+        assert!(CHANNEL.width(at(3, 2)) > CHANNEL.width(at(0, 0)));
         assert_eq!(Channel { headwater: 2.0, max: 3.0 }.width(at(3, 2)), 3.0, "the maximum caps the width");
     }
 
@@ -433,7 +292,7 @@ mod tests {
         let drains = drainage(&net.order, &net.downstream);
 
         let chain = chain_from(&net, *net.order.last().expect("a network has hexes"));
-        let line = centreline(&chain, &layout, &drains, style(0.0));
+        let line = centreline(&chain, &layout, &drains, &wander(0.0));
 
         // Without wander the curve starts and ends on a hex centre, and crosses between them halfway.
         assert_eq!(line.anchors.len(), chain.len() + 1);
@@ -455,7 +314,8 @@ mod tests {
         let map = parse_map(MAP, "m", &palette, Top::Pointy).unwrap();
         let layout = layout(&map);
         // Wander on, so straying cannot quietly change which courses there are.
-        let courses = |rivers| parse_rivers(rivers, "r", &map, &layout, Top::Pointy, 'M', style(0.4)).unwrap();
+        let courses =
+            |rivers| parse_rivers(rivers, "r", &map, &layout, Top::Pointy, 'M', CHANNEL, &wander(0.4)).unwrap();
 
         assert_eq!(courses(RIVERS).len(), 1);
         // Two rivers side by side, each with its own source and its own mouth.
@@ -507,8 +367,8 @@ mod tests {
         let drains = drainage(&net.order, &net.downstream);
         let chain = chain_from(&net, *net.order.last().expect("a network has hexes"));
 
-        let straight = centreline(&chain, &layout, &drains, style(0.0));
-        let strayed = centreline(&chain, &layout, &drains, style(0.4));
+        let straight = centreline(&chain, &layout, &drains, &wander(0.0));
+        let strayed = centreline(&chain, &layout, &drains, &wander(0.4));
 
         // Same shape of curve, different points.
         assert_eq!(strayed.anchors.len(), straight.anchors.len());
@@ -534,12 +394,12 @@ mod tests {
         let drains = drainage(&net.order, &net.downstream);
         let chain = chain_from(&net, *net.order.last().expect("a network has hexes"));
 
-        let once = centreline(&chain, &layout, &drains, style(0.4));
-        let again = centreline(&chain, &layout, &drains, style(0.4));
+        let once = centreline(&chain, &layout, &drains, &wander(0.4));
+        let again = centreline(&chain, &layout, &drains, &wander(0.4));
         assert!(once.anchors.iter().zip(&again.anchors).all(|(a, b)| close(*a, *b)));
 
-        let other = Style { seed: 8, ..style(0.4) };
-        let elsewhere = centreline(&chain, &layout, &drains, other);
+        let other = Wander { seed: 8, ..wander(0.4) };
+        let elsewhere = centreline(&chain, &layout, &drains, &other);
         assert!(
             once.anchors.iter().zip(&elsewhere.anchors).any(|(a, b)| !close(*a, *b)),
             "a different seed drew the same river"
@@ -563,8 +423,8 @@ mod tests {
 
         // The trunk below a confluence is drawn once per source above it. Those copies land exactly
         // on top of each other only while they agree about where to stray, so compare the tails.
-        let a = centreline(first, &layout, &drains, style(0.4));
-        let b = centreline(second, &layout, &drains, style(0.4));
+        let a = centreline(first, &layout, &drains, &wander(0.4));
+        let b = centreline(second, &layout, &drains, &wander(0.4));
         for i in 1..=shared {
             let (pa, pb) = (a.anchors[a.anchors.len() - i], b.anchors[b.anchors.len() - i]);
             assert!(close(pa, pb), "trunk anchor {i} from the end differs: {pa:?} vs {pb:?}");
