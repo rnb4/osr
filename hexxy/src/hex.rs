@@ -236,8 +236,23 @@ impl Layout {
         edges
     }
 
+    /// A name for the corner at a hex's vertex that every hex sharing it agrees on.
+    ///
+    /// Three hexes meet at a corner and each calls it by a different index, so joining perimeter edges head to tail
+    /// would otherwise mean comparing the points, and comparing floats for identity is a trap. Corner `c` is the near
+    /// end of edge `c` and the far end of edge `c - 1`, so the hexes across those two edges are the other two holding
+    /// it, and the edge invariant gives each one's index for it. The smallest of the three readings names it, the same
+    /// way [`Layout::edges`] names an edge from either side.
+    pub fn vertex(&self, hex: Axial, corner: usize) -> (Axial, usize) {
+        let (corner, directions) = (corner % 6, self.directions());
+        min(
+            (hex, corner),
+            min((hex + directions[corner], (corner + 4) % 6), (hex + directions[(corner + 5) % 6], (corner + 2) % 6)),
+        )
+    }
+
     /// The step to the neighbour across each edge.
-    fn directions(&self) -> [Axial; 6] {
+    pub(crate) fn directions(&self) -> [Axial; 6] {
         let steps = match self.top {
             Top::Pointy => [(0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1), (1, 0)],
             Top::Flat => [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)],
@@ -288,6 +303,30 @@ mod tests {
         let flower: Vec<Axial> = Axial::default().disc(1).collect();
         assert_eq!(flower.len(), 7);
         assert_eq!(layout.edges(flower, 1.0, |cell| layout.centre(cell)).len(), 30);
+    }
+
+    /// Borders are traced by joining perimeter edges at the corners they share, so the three hexes meeting at a corner
+    /// have to name it the same way, and the name has to come from the same corner they all draw there.
+    #[test]
+    fn corners_are_named_the_same_by_every_hex_sharing_them() {
+        for top in [Top::Pointy, Top::Flat] {
+            let (layout, _) = Layout::fit(top, 10.0, Axial::default().disc(2));
+            for hex in [Axial::default(), Axial::new(2, -1)] {
+                let directions = layout.directions();
+                let corners = layout.corners(layout.centre(hex), 1.0);
+                let mut named = std::collections::HashSet::new();
+                for c in 0..6 {
+                    let (across, before) = (hex + directions[c], hex + directions[(c + 5) % 6]);
+                    assert_eq!(layout.vertex(hex, c), layout.vertex(across, (c + 4) % 6), "{top} {c}");
+                    assert_eq!(layout.vertex(hex, c), layout.vertex(before, (c + 2) % 6), "{top} {c}");
+                    // The indices agreeing is not enough on its own: they have to agree about a corner the hexes all
+                    // really draw in the same place.
+                    assert!(close(corners[c], layout.corners(layout.centre(across), 1.0)[(c + 4) % 6]), "{top} {c}");
+                    assert!(close(corners[c], layout.corners(layout.centre(before), 1.0)[(c + 2) % 6]), "{top} {c}");
+                    assert!(named.insert(layout.vertex(hex, c)), "{top} {c}");
+                }
+            }
+        }
     }
 
     #[test]

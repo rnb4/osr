@@ -210,7 +210,7 @@ pub fn parse_map<'a>(text: &str, file: impl Display, palette: &'a Palette, top: 
 
 /// Parses a staggered grid laid out like `map`, and places every cell on the hex the map put there.
 ///
-/// Rivers and roads are both typed as their own grid beside the map, and both have to land on the map's
+/// Rivers, roads and borders are each typed as their own grid beside the map, and all of them have to land on the map's
 /// own hexes: a grid that is out of step fails here rather than drawing the whole network half a hex out.
 pub fn place_grid(text: &str, file: impl Display, map: &Map, top: Top) -> Result<Vec<(Axial, Cell)>, String> {
     let (cells, _) = parse_grid(text, &file, top)?;

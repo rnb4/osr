@@ -18,62 +18,15 @@ use crate::{
 pub const CROSSING: u64 = 20;
 pub const BEND: u64 = 21;
 
-/// One kind of way, named by the character standing for it on the grid.
-#[derive(Clone, Debug)]
-pub struct Class {
-    pub key: char,
-    pub name: String,
-    pub color: String,
-    /// As a fraction of hex width.
-    pub width: f64,
-    /// Dash and gap lengths, as fractions of hex width. Empty draws a solid line.
-    pub dash: Vec<f64>,
-}
+/// One kind of way, named by the character standing for it on the grid; see [`super::stroke::Kind`].
+pub type Class = super::stroke::Kind;
 
 /// Parses one `--road-class` value, '<char> <color> <width> <dash> [name]'.
 ///
-/// The grammar follows the palette's, one line's worth per flag, because a map with a highway, a road
-/// and a trail on it wants three of these and nothing more.
+/// One line's worth per flag, because a map with a highway, a road and a trail on it wants three of these and nothing
+/// more; borders keep the same grammar in a file of their own.
 pub fn parse_class(text: &str) -> Result<Class, String> {
-    const EXPECTED: &str = "expected '<char> <color> <width> <dash> [name]', e.g. \"t #6b4f2a 0.05 0.18,0.12 trail\"";
-
-    let mut fields = text.split_whitespace();
-    let (Some(key), Some(color), Some(width), Some(dash)) =
-        (fields.next(), fields.next(), fields.next(), fields.next())
-    else {
-        return Err(EXPECTED.to_string());
-    };
-
-    let mut chars = key.chars();
-    let (Some(key), None) = (chars.next(), chars.next()) else {
-        return Err(format!("road class key must be one character, got \"{key}\""));
-    };
-    if map::BLANKS.contains(&key) {
-        return Err(format!("'{key}' means \"no hex here\" on a grid, so it cannot name a road class"));
-    }
-
-    let width = width.parse::<f64>().map_err(|err| format!("width \"{width}\": {err}"))?;
-    if !(width.is_finite() && width > 0.0) {
-        return Err(format!("width must be a number more than zero, got {width}"));
-    }
-
-    let dash = match dash {
-        "none" => Vec::new(),
-        text => text
-            .split(',')
-            .map(|length| {
-                let length = length.parse::<f64>().map_err(|err| format!("dash \"{length}\": {err}"))?;
-                match length >= 0.0 {
-                    true => Ok(length),
-                    false => Err(format!("dash lengths cannot be negative, got {length}")),
-                }
-            })
-            .collect::<Result<Vec<f64>, String>>()?,
-    };
-
-    let name = fields.collect::<Vec<_>>().join(" ");
-    let name = if name.is_empty() { key.to_string() } else { name };
-    Ok(Class { key, name, color: color.to_string(), width, dash })
+    super::stroke::parse_kind(text, "road class", "t #6b4f2a 0.05 0.18,0.12 trail")
 }
 
 /// One run of road, as the curve a stroke follows.

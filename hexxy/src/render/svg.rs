@@ -7,7 +7,13 @@ use std::{
 
 use quick_xml::escape::escape;
 
-use super::{ATLAS_SCALE, Args, CoordsAlign, Feature, Icons, rivers::Course, roads::Road, symbols::SODIPODI_NS};
+use super::{
+    ATLAS_SCALE, Args, CoordsAlign, Feature, Icons,
+    borders::{Border, Type},
+    rivers::Course,
+    roads::Road,
+    symbols::SODIPODI_NS,
+};
 use crate::{
     hex::{Axial, Layout, Point},
     map::{Hex, Terrain},
@@ -16,10 +22,6 @@ use crate::{
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
 const INKSCAPE_NS: &str = "http://www.inkscape.org/namespaces/inkscape";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
-
-/// Borders sit above the grid, drawn across the map rather than following what is under them, and the generator
-/// leaves them to be drawn by hand.
-const BORDERS_LAYER: (&str, &str) = ("Borders", "layer-borders");
 
 pub struct Scene<'a> {
     pub args: &'a Args,
@@ -30,6 +32,9 @@ pub struct Scene<'a> {
     pub features: &'a [Feature],
     pub rivers: &'a [Course],
     pub roads: &'a [Road],
+    pub borders: &'a [Border],
+    /// The types the borders index into. Unlike the road classes these are read from a file, not given as arguments.
+    pub border_types: &'a [Type],
 }
 
 /// A length rounded to 2 decimal places.
@@ -76,12 +81,6 @@ fn close_layer(f: &mut Formatter) -> fmt::Result {
     writeln!(f, "  </g>")
 }
 
-/// A named layer with nothing in it, waiting for work drawn by hand.
-fn empty_layer(f: &mut Formatter, (label, id): (&str, &str)) -> fmt::Result {
-    open_layer(f, label, id)?;
-    close_layer(f)
-}
-
 fn write_icon_use(f: &mut Formatter, id: usize, centre: Point, size: f64) -> fmt::Result {
     let (x, y, size) = (Num(centre.x - size / 2.0), Num(centre.y - size / 2.0), Num(size));
     writeln!(f, r##"    <use href="#icon-{id}" x="{x}" y="{y}" width="{size}" height="{size}"/>"##)
@@ -113,7 +112,7 @@ impl Display for Scene<'_> {
         if let Some(offset) = self.args.atlas.atlas {
             self.write_atlas(f, offset)?;
         }
-        empty_layer(f, BORDERS_LAYER)?;
+        self.write_borders(f)?;
         self.write_features(f)?;
         self.write_labels(f)?;
         if let Some(align) = self.args.coords.coords {
@@ -233,6 +232,43 @@ impl Scene<'_> {
             Num(width),
             Num(atlas.atlas_opacity),
         )?;
+        close_layer(f)
+    }
+
+    /// Border rings, grouped by the type they are drawn in so a whole type can be picked out at once. A ring is one
+    /// closed path, so a dashed type carries its dashes right round an area instead of restarting at every hex. The
+    /// layer is opened even when there are none, so there is always somewhere to draw more by hand.
+    fn write_borders(&self, f: &mut Formatter) -> fmt::Result {
+        let scale = self.layout.hex_width();
+
+        open_layer(f, "Borders", "layer-borders")?;
+        for (kind, ty) in self.border_types.iter().enumerate() {
+            let rings: Vec<&Border> = self.borders.iter().filter(|border| border.kind == kind).collect();
+            if rings.is_empty() {
+                continue;
+            }
+            let id: String = ty.name.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+            write!(
+                f,
+                r#"    <g fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" stroke-linejoin="round""#,
+                escape(&ty.color),
+                Num(ty.width * scale),
+                Num(self.args.borders.border_opacity),
+            )?;
+            if !ty.dash.is_empty() {
+                write!(f, r#" stroke-dasharray=""#)?;
+                write_separated(f, ty.dash.iter().map(|&length| Num(length * scale)), ",")?;
+                write!(f, r#"""#)?;
+            }
+            writeln!(f, r#" inkscape:label="{}" id="border-{}">"#, escape(&ty.name), id.trim_matches('-'))?;
+
+            for border in rings {
+                write!(f, r#"      <path d="M"#)?;
+                write_separated(f, &border.ring, "L")?;
+                writeln!(f, r#"Z"/>"#)?;
+            }
+            writeln!(f, "    </g>")?;
+        }
         close_layer(f)
     }
 

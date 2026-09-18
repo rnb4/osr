@@ -1,9 +1,11 @@
 //! The `render` subcommand: a layered hex map SVG for a Foundry VTT scene, from a plain text grid.
 
+mod borders;
 mod course;
 mod features;
 mod rivers;
 mod roads;
+mod stroke;
 mod svg;
 mod symbols;
 
@@ -55,8 +57,7 @@ The map is typed staggered, so the text previews the drawing. '.' and space mean
 When not given, the palette and symbols directory are picked up from the current directory, and features from a \
 file named after the map, e.g. swamp-coast.features.txt beside swamp-coast.txt.
 
-Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates. Borders are \
-drawn across the map rather than following what is under them, so that layer is left empty for drawing by hand.
+Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates.
 
 Rivers are drawn from a second staggered grid, MAP.rivers.txt beside the map, laid out the same way so the columns \
 that line up in the text line up on the map. Any non-blank character is a river hex, and --river-mouth (default 'M') \
@@ -71,6 +72,15 @@ Each character names a kind of way given by --road-class, 'R' road and 't' trail
 pair of neighbouring road hexes is joined. Where two kinds meet, the narrower one is drawn up to the centre of the \
 wider one's hex, so a trail joining a road meets it without a seam. A way is stroked at one width, so unlike a river \
 it can be dashed, and a whole run is one path so the dashes carry along it.
+
+Borders are drawn from a fourth staggered grid, MAP.borders.txt beside the map, but along the grid lines rather than \
+through hex centres. Every hex holding the same character is one area, and its border is the edges of that area with \
+nothing of its own across them, so the edges inside it are left out and what is drawn surrounds it. Each character \
+names a type from a border types file, borders or borders.txt in the current directory unless --border-types says \
+otherwise, one '<char> <color> <width> <dash> [name]' per line like the palette. An area comes out as closed rings, \
+one more for each enclave in it, and a ring is one path, so a dashed type carries its dashes right round. Each border \
+sits half its own width inside the area it surrounds, so it reaches out to the grid line and no further and two areas \
+meeting along an edge draw a line each side of it. The Borders layer stays editable for drawing more by hand.
 
 The image has no margin, so hex (0,0) sits on the scene origin. The Foundry scene settings to use are printed after \
 rendering.";
@@ -113,6 +123,9 @@ pub struct Args {
 
     #[command(flatten)]
     roads: RoadArgs,
+
+    #[command(flatten)]
+    borders: BorderArgs,
 
     #[command(flatten)]
     labels: LabelArgs,
@@ -269,6 +282,28 @@ struct RoadArgs {
 }
 
 #[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Borders")]
+struct BorderArgs {
+    /// Staggered grid of border hexes, laid out like the map; every hex holding the same character is one area, and its
+    /// border is drawn along the grid lines around that area [default: MAP.borders.txt beside the map, if present]
+    #[arg(long, value_name = "FILE", conflicts_with = "no_borders")]
+    borders: Option<PathBuf>,
+
+    /// Draw no borders, even if a borders grid is present
+    #[arg(long)]
+    no_borders: bool,
+
+    /// Border types, '<char> <color> <width> <dash> [name]' per line; the width and the dash lengths are fractions of
+    /// hex width, and a dash of 'none' draws a solid line [default: borders or borders.txt in the current directory]
+    #[arg(long, value_name = "FILE", conflicts_with = "no_borders")]
+    border_types: Option<PathBuf>,
+
+    /// Border opacity
+    #[arg(long, default_value_t = 1.0)]
+    border_opacity: f64,
+}
+
+#[derive(clap::Args, Debug)]
 #[command(next_help_heading = "Labels")]
 struct LabelArgs {
     /// Feature label colour
@@ -393,6 +428,11 @@ pub fn run(args: Args) -> Result<(), String> {
     } else {
         args.roads.roads.clone().or_else(|| Some(sidecar_for(&args.map, ".roads.txt")).filter(|p| p.is_file()))
     };
+    let borders_path = if args.borders.no_borders {
+        None
+    } else {
+        args.borders.borders.clone().or_else(|| Some(sidecar_for(&args.map, ".borders.txt")).filter(|p| p.is_file()))
+    };
 
     let symbols = symbols_dir.map(|dir| symbols::load(&dir).map(|symbols| (dir, symbols))).transpose()?;
     let specs = match &features_path {
@@ -440,6 +480,31 @@ pub fn run(args: Args) -> Result<(), String> {
         None => Vec::new(),
     };
 
+    // The grid says where an area is and the types file says how it is drawn, so borders need both. Looking the types
+    // file up only when there is a grid keeps a stray borders.txt from mattering to a map with no borders on it.
+    let (border_types, borders) = match &borders_path {
+        Some(path) => {
+            let types_path = found(args.borders.border_types.as_deref(), &["borders", "borders.txt"], Path::is_file)
+                .ok_or(
+                    "the borders grid names its types, so it needs a border types file: pass --border-types, or put \
+                     borders or borders.txt in the current directory (or pass --no-borders)",
+                )?;
+            // borders.txt in the current directory is the types and MAP.borders.txt is the grid, which only collide for
+            // a map named borders; reading one as the other would go wrong in a way that took explaining.
+            if types_path == *path {
+                return Err(format!(
+                    "{} cannot be both the border types and the borders grid; name one of them with --border-types or \
+                     --borders",
+                    path.display()
+                ));
+            }
+            let types = borders::read_types(&types_path)?;
+            let rings = borders::read_borders(path, &map, &layout, args.top, &types)?;
+            (types, rings)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
     let scene = Scene {
         args: &args,
         layout,
@@ -449,6 +514,8 @@ pub fn run(args: Args) -> Result<(), String> {
         features: &features,
         rivers: &courses,
         roads: &ways,
+        borders: &borders,
+        border_types: &border_types,
     };
     fs::write(&args.output, scene.to_string())
         .map_err(|err| format!("could not write {}: {err}", args.output.display()))?;
@@ -554,6 +621,7 @@ mod tests {
         assert_eq!(sidecar_for(Path::new("maps/atlas"), ".features.txt"), Path::new("maps/atlas.features.txt"));
         assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".rivers.txt"), Path::new("swamp-coast.rivers.txt"));
         assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".roads.txt"), Path::new("swamp-coast.roads.txt"));
+        assert_eq!(sidecar_for(Path::new("swamp-coast.txt"), ".borders.txt"), Path::new("swamp-coast.borders.txt"));
     }
 
     #[test]
