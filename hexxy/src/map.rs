@@ -63,11 +63,6 @@ pub struct Map<'a> {
     pub starts_offset: bool,
 }
 
-pub fn read_palette(path: &Path) -> Result<Palette, String> {
-    let text = fs::read_to_string(path).map_err(|err| format!("could not read palette {}: {err}", path.display()))?;
-    parse_palette(text.as_str(), path.display())
-}
-
 pub fn read_map<'a>(path: &Path, palette: &'a Palette, top: Top) -> Result<Map<'a>, String> {
     let text = fs::read_to_string(path).map_err(|err| format!("could not read map {}: {err}", path.display()))?;
     parse_map(&text, path.display(), palette, top)

@@ -8,10 +8,11 @@ use std::{
 use quick_xml::escape::escape;
 
 use super::{
-    ATLAS_SCALE, Args, CoordsAlign, Feature, Icons,
+    ATLAS_SCALE, CoordsAlign, Feature, Icons,
     borders::{Border, Type},
     rivers::Course,
     roads::{Class, Road},
+    settings::Settings,
     symbols::SODIPODI_NS,
 };
 use crate::{
@@ -24,7 +25,7 @@ const INKSCAPE_NS: &str = "http://www.inkscape.org/namespaces/inkscape";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 
 pub struct Scene<'a> {
-    pub args: &'a Args,
+    pub settings: &'a Settings,
     pub layout: Layout,
     pub size: Point,
     pub hexes: &'a [Hex<'a>],
@@ -96,7 +97,7 @@ impl Display for Scene<'_> {
             f,
             r#"<svg xmlns="{SVG_NS}" xmlns:inkscape="{INKSCAPE_NS}" xmlns:sodipodi="{SODIPODI_NS}" xmlns:xlink="{XLINK_NS}" version="1.1" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
         )?;
-        if let Some(background) = &self.args.grid.background {
+        if let Some(background) = &self.settings.grid.background {
             let fill = escape(background);
             writeln!(f, r#"  <rect x="0" y="0" width="{width}" height="{height}" fill="{fill}" id="background"/>"#)?;
         }
@@ -108,16 +109,16 @@ impl Display for Scene<'_> {
         // Courses and roads run under the grid, so the hex outlines stay unbroken where one crosses them.
         self.write_rivers(f)?;
         self.write_roads(f)?;
-        if !self.args.grid.no_grid {
+        if self.settings.grid.draw {
             self.write_grid(f)?;
         }
-        if let Some(offset) = self.args.atlas.atlas {
+        if let Some(offset) = self.settings.atlas.offset {
             self.write_atlas(f, offset)?;
         }
         self.write_borders(f)?;
         self.write_features(f)?;
         self.write_labels(f)?;
-        if let Some(align) = self.args.coords.coords {
+        if let Some(align) = self.settings.coords.show {
             self.write_coords(f, align)?;
         }
         writeln!(f, "</svg>")
@@ -126,7 +127,7 @@ impl Display for Scene<'_> {
 
 impl Scene<'_> {
     fn grid_width(&self) -> f64 {
-        self.args.grid.grid_width.unwrap_or(self.layout.radius() / 40.0)
+        self.settings.grid.width.unwrap_or(self.layout.radius() / 40.0)
     }
 
     /// Flat colour per hex, grouped by terrain so a whole terrain can be selected at once. The stroke matches the fill
@@ -178,7 +179,7 @@ impl Scene<'_> {
         }
 
         open_layer(f, "Icons", "layer-icons")?;
-        let size = self.args.icons.icon_scale * self.layout.hex_width();
+        let size = self.settings.icons.scale * self.layout.hex_width();
         for &(centre, id) in &icons.placed {
             write_icon_use(f, id, centre, size)?;
         }
@@ -187,7 +188,7 @@ impl Scene<'_> {
 
     /// Hex outlines, drawn above the icons so grid lines stay legible over them.
     fn write_grid(&self, f: &mut Formatter) -> fmt::Result {
-        let grid = &self.args.grid;
+        let grid = &self.settings.grid;
         let edges = self.layout.edges(self.hexes.iter().map(|hex| hex.axial), 1.0, |hex| self.layout.centre(hex));
 
         open_layer(f, "Grid", "layer-grid")?;
@@ -196,16 +197,16 @@ impl Scene<'_> {
         writeln!(
             f,
             r#"" fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" id="hex-grid"/>"#,
-            escape(&grid.grid_color),
+            escape(&grid.color),
             Num(self.grid_width()),
-            Num(grid.grid_opacity),
+            Num(grid.opacity),
         )?;
         close_layer(f)
     }
 
     /// Parent atlas hexes, ATLAS_SCALE sub-hexes across, wherever one of the sub-hexes they wholly own is on the map.
     fn write_atlas(&self, f: &mut Formatter, offset: Axial) -> fmt::Result {
-        let atlas = &self.args.atlas;
+        let atlas = &self.settings.atlas;
         let centre_of = |cell: Axial| cell * ATLAS_SCALE + offset;
         let on_map: HashSet<Axial> = self.hexes.iter().map(|hex| hex.axial).collect();
 
@@ -222,7 +223,7 @@ impl Scene<'_> {
             .into_iter()
             .filter(|&cell| centre_of(cell).disc(ATLAS_SCALE / 2).any(|hex| on_map.contains(&hex)));
         let edges = self.layout.edges(owners, f64::from(ATLAS_SCALE), |cell| self.layout.centre(centre_of(cell)));
-        let width = atlas.atlas_width.unwrap_or(self.layout.radius() / 10.0);
+        let width = atlas.width.unwrap_or(self.layout.radius() / 10.0);
 
         open_layer(f, "Atlas", "layer-atlas")?;
         write!(f, r#"    <path d=""#)?;
@@ -230,9 +231,9 @@ impl Scene<'_> {
         writeln!(
             f,
             r#"" fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" stroke-linejoin="round" id="atlas-grid"/>"#,
-            escape(&atlas.atlas_color),
+            escape(&atlas.color),
             Num(width),
-            Num(atlas.atlas_opacity),
+            Num(atlas.opacity),
         )?;
         close_layer(f)
     }
@@ -255,7 +256,7 @@ impl Scene<'_> {
                 r#"    <g fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" stroke-linejoin="round""#,
                 escape(&ty.color),
                 Num(ty.width * scale),
-                Num(self.args.borders.border_opacity),
+                Num(self.settings.borders.opacity),
             )?;
             if !ty.dash.is_empty() {
                 write!(f, r#" stroke-dasharray=""#)?;
@@ -279,14 +280,14 @@ impl Scene<'_> {
     ///
     /// Courses sharing a trunk overlap along it, which one flat colour hides, so confluences need no seam of their own.
     fn write_rivers(&self, f: &mut Formatter) -> fmt::Result {
-        let rivers = &self.args.rivers;
+        let rivers = &self.settings.rivers;
         open_layer(f, "Rivers", "layer-rivers")?;
         if !self.rivers.is_empty() {
             writeln!(
                 f,
                 r#"    <g fill="{}" fill-opacity="{}" stroke="none" id="rivers">"#,
-                escape(&rivers.river_color),
-                Num(rivers.river_opacity),
+                escape(&rivers.color),
+                Num(rivers.opacity),
             )?;
             for course in self.rivers {
                 write!(f, r#"      <path d="M"#)?;
@@ -303,7 +304,7 @@ impl Scene<'_> {
     /// of it instead of restarting at every hex. The layer is opened even when there are none, so there is always
     /// somewhere to draw more by hand.
     fn write_roads(&self, f: &mut Formatter) -> fmt::Result {
-        let roads = &self.args.roads;
+        let roads = &self.settings.roads;
         let scale = self.layout.hex_width();
 
         open_layer(f, "Roads", "layer-roads")?;
@@ -318,7 +319,7 @@ impl Scene<'_> {
                 r#"    <g fill="none" stroke="{}" stroke-width="{}" stroke-opacity="{}" stroke-linecap="round" stroke-linejoin="round""#,
                 escape(&kind.color),
                 Num(kind.width * scale),
-                Num(roads.road_opacity),
+                Num(roads.opacity),
             )?;
             if !kind.dash.is_empty() {
                 write!(f, r#" stroke-dasharray=""#)?;
@@ -340,7 +341,7 @@ impl Scene<'_> {
     }
 
     fn feature_size(&self) -> f64 {
-        self.args.icons.feature_scale * self.layout.hex_width()
+        self.settings.icons.feature_scale * self.layout.hex_width()
     }
 
     fn write_features(&self, f: &mut Formatter) -> fmt::Result {
@@ -355,16 +356,16 @@ impl Scene<'_> {
     }
 
     fn write_labels(&self, f: &mut Formatter) -> fmt::Result {
-        let labels = &self.args.labels;
+        let labels = &self.settings.labels;
         open_layer(f, "Labels", "layer-labels")?;
         writeln!(
             f,
             r#"    <g font-family="{}" font-size="{}" font-weight="{}" font-style="{}" fill="{}" text-anchor="middle">"#,
-            escape(&labels.label_font),
-            Num(labels.label_size * self.layout.hex_width()),
-            escape(&labels.label_weight),
-            escape(&labels.label_style),
-            escape(&labels.label_color),
+            escape(&labels.font),
+            Num(labels.size * self.layout.hex_width()),
+            escape(&labels.weight),
+            escape(&labels.style),
+            escape(&labels.color),
         )?;
         // Labels hang just below their feature's icon.
         let drop = self.feature_size() * 0.72;
@@ -380,8 +381,8 @@ impl Scene<'_> {
 
     /// Coordinates go last so they sit on top of everything else.
     fn write_coords(&self, f: &mut Formatter, align: CoordsAlign) -> fmt::Result {
-        let coords = &self.args.coords;
-        let size = coords.coords_size * self.layout.hex_width();
+        let coords = &self.settings.coords;
+        let size = coords.size * self.layout.hex_width();
         // SVG y is a text baseline, not a midline, so centred text is nudged down by part of its size.
         let baseline = match align {
             CoordsAlign::Top => -0.52 * self.layout.radius(),
@@ -393,10 +394,10 @@ impl Scene<'_> {
         writeln!(
             f,
             r#"    <g font-family="{}" font-size="{}" fill="{}" fill-opacity="{}" text-anchor="middle">"#,
-            escape(&coords.coords_font),
+            escape(&coords.font),
             Num(size),
-            escape(&coords.coords_color),
-            Num(coords.coords_opacity),
+            escape(&coords.color),
+            Num(coords.opacity),
         )?;
         for hex in self.hexes {
             let centre = self.layout.centre(hex.axial);

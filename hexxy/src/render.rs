@@ -20,6 +20,7 @@ use std::{
 use clap::ValueEnum;
 
 use crate::{
+    defs::{self, Defs},
     found,
     hex::{ATLAS_SCALE, Axial, Layout, Point, Top},
     map::{self, Coord, Map},
@@ -29,6 +30,7 @@ use crate::{
 use course::Wander;
 use features::FeatureSpec;
 use rivers::Channel;
+use settings::Settings;
 use svg::{Num, Scene};
 use symbols::{Symbol, Symbols};
 
@@ -54,8 +56,21 @@ The map is typed staggered, so the text previews the drawing. '.' and space mean
             ~   ~   ~   ~        line 1 -> columns 1, 3, 5, 7   row 0
           ~   ~   ~   ~          line 2 -> columns 0, 2, 4, 6   row 1
 
-When not given, the palette and symbols directory are picked up from the current directory, and features from a \
-file named after the map, e.g. swamp-coast.features.txt beside swamp-coast.txt.
+Everything about how the map is drawn lives in one definitions file: hexxy or hexxy.txt in the current directory \
+unless --defs says otherwise. It is [section] blocks, and anything typed as a flag beats what the file says.
+
+  [palette]        '<char> <color> [name]' per line: the terrain each map character stands for
+  [terrain.NAME]   how generate expands NAME into sub-hexes; render ignores these
+  [road.classes]   '<char> <color> <width> <dash> [name]' per line
+  [border.types]   the same, for borders
+  [grid] [atlas] [rivers] [roads] [borders] [icons] [labels] [coords]
+                   'key value' per line, holding this map's defaults for the flags below
+
+A line starting with # or // is a comment, and // comments out the rest of a line. Colours start with #, so # cannot \
+be used partway along one.
+
+The symbols directory is still picked up from the current directory, and features from a file named after the map, \
+e.g. swamp-coast.features.txt beside swamp-coast.txt.
 
 Layers, in draw order: Terrain, Icons, Rivers, Roads, Grid, Atlas, Borders, Features, Labels, Coordinates.
 
@@ -68,17 +83,15 @@ joins. Adjacent river hexes always join into one network, so two separate rivers
 layer stays editable for drawing more by hand.
 
 Roads are drawn from a third staggered grid, MAP.roads.txt beside the map, and run through hex centres the same way. \
-Each character names a class from a road classes file, roads or roads.txt in the current directory unless \
---road-classes says otherwise, one '<char> <color> <width> <dash> [name]' per line like the palette, and every pair \
-of neighbouring road hexes is joined. Where two classes meet, the narrower one is drawn up to the centre of the \
+Each character names a class from the [road.classes] section, one '<char> <color> <width> <dash> [name]' per line \
+like the palette, and every pair of neighbouring road hexes is joined. Where two classes meet, the narrower one is drawn up to the centre of the \
 wider one's hex, so a trail joining a road meets it without a seam. A way is stroked at one width, so unlike a river \
 it can be dashed, and a whole run is one path so the dashes carry along it.
 
 Borders are drawn from a fourth staggered grid, MAP.borders.txt beside the map, but along the grid lines rather than \
 through hex centres. Every hex holding the same character is one area, and its border is the edges of that area with \
 nothing of its own across them, so the edges inside it are left out and what is drawn surrounds it. Each character \
-names a type from a border types file, borders or borders.txt in the current directory unless --border-types says \
-otherwise, one '<char> <color> <width> <dash> [name]' per line like the palette. An area comes out as closed rings, \
+names a type from the [border.types] section, one '<char> <color> <width> <dash> [name]' per line like the palette. An area comes out as closed rings, \
 one more for each enclave in it, and a ring is one path, so a dashed type carries its dashes right round. Each border \
 sits half its own width inside the area it surrounds, so it reaches out to the grid line and no further and two areas \
 meeting along an edge draw a line each side of it. The Borders layer stays editable for drawing more by hand.
@@ -91,8 +104,10 @@ pub struct Args {
     /// Text grid of terrain characters
     map: PathBuf,
 
-    /// Terrain palette, '<char> <color> [name]' per line [default: palette or palette.txt]
-    palette: Option<PathBuf>,
+    /// Definitions: the [palette], [road.classes], [border.types] and settings sections
+    /// [default: hexxy or hexxy.txt]
+    #[arg(long, value_name = "FILE")]
+    defs: Option<PathBuf>,
 
     /// Where to write the SVG
     #[arg(short, long, default_value = "map.svg")]
@@ -102,9 +117,9 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t)]
     top: Top,
 
-    /// Foundry grid size in px: the width of a pointy-top hex, or the height of a flat-top one
-    #[arg(short, long, default_value_t = 50.0)]
-    grid_size: f64,
+    /// Foundry grid size in px: the width of a pointy-top hex, or the height of a flat-top one [default: 50]
+    #[arg(short, long)]
+    grid_size: Option<f64>,
 
     /// Picks between icon variants; the same seed always picks the same ones
     #[arg(long, default_value_t = 0)]
@@ -156,13 +171,13 @@ struct IconArgs {
     #[arg(long)]
     no_features: bool,
 
-    /// Terrain icon size as a fraction of hex width
-    #[arg(long, default_value_t = 0.66)]
-    icon_scale: f64,
+    /// Terrain icon size as a fraction of hex width [default: 0.66]
+    #[arg(long)]
+    icon_scale: Option<f64>,
 
-    /// Feature icon size as a fraction of hex width
-    #[arg(long, default_value_t = 0.72)]
-    feature_scale: f64,
+    /// Feature icon size as a fraction of hex width [default: 0.72]
+    #[arg(long)]
+    feature_scale: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -172,17 +187,17 @@ struct GridArgs {
     #[arg(long)]
     no_grid: bool,
 
-    /// Grid line colour
-    #[arg(long, default_value = "#2b2b2b")]
-    grid_color: String,
+    /// Grid line colour [default: #2b2b2b]
+    #[arg(long)]
+    grid_color: Option<String>,
 
     /// Grid line width in px [default: scales with --grid-size]
     #[arg(long)]
     grid_width: Option<f64>,
 
-    /// Grid line opacity; below 1 the grid blends with the terrain under it
-    #[arg(long, default_value_t = 1.0)]
-    grid_opacity: f64,
+    /// Grid line opacity; below 1 the grid blends with the terrain under it [default: 1]
+    #[arg(long)]
+    grid_opacity: Option<f64>,
 
     /// Colour behind the whole map
     #[arg(long)]
@@ -197,17 +212,17 @@ struct AtlasArgs {
     #[arg(long, value_name = "Q,R", value_parser = parse_atlas_offset, allow_hyphen_values = true)]
     atlas: Option<Axial>,
 
-    /// Atlas line colour
-    #[arg(long, default_value = "#241c14")]
-    atlas_color: String,
+    /// Atlas line colour [default: #241c14]
+    #[arg(long)]
+    atlas_color: Option<String>,
 
     /// Atlas line width in px [default: scales with --grid-size]
     #[arg(long)]
     atlas_width: Option<f64>,
 
-    /// Atlas line opacity
-    #[arg(long, default_value_t = 0.85)]
-    atlas_opacity: f64,
+    /// Atlas line opacity [default: 0.85]
+    #[arg(long)]
+    atlas_opacity: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -222,31 +237,31 @@ struct RiverArgs {
     #[arg(long)]
     no_rivers: bool,
 
-    /// The character marking where a course ends, normally on the sea or lake hex it empties into
-    #[arg(long, value_name = "CHAR", default_value_t = 'M')]
-    river_mouth: char,
+    /// The character marking where a course ends, normally on the sea or lake hex it empties into [default: M]
+    #[arg(long, value_name = "CHAR")]
+    river_mouth: Option<char>,
 
-    /// River colour
-    #[arg(long, default_value = "#78c7f5")]
-    river_color: String,
+    /// River colour [default: #78c7f5]
+    #[arg(long)]
+    river_color: Option<String>,
 
     /// Width of a headwater as a fraction of hex width; a course widens with the square root of the hexes draining
-    /// into it
-    #[arg(long, default_value_t = 0.07)]
-    river_width: f64,
+    /// into it [default: 0.07]
+    #[arg(long)]
+    river_width: Option<f64>,
 
-    /// The widest a course is drawn, as a fraction of hex width
-    #[arg(long, default_value_t = 0.22)]
-    river_max_width: f64,
+    /// The widest a course is drawn, as a fraction of hex width [default: 0.22]
+    #[arg(long)]
+    river_max_width: Option<f64>,
 
     /// How far a course strays from the straight run between hex centres, as a fraction of hex radius; 0 draws it
-    /// perfectly regular. Which way it strays is picked by --seed
-    #[arg(long, default_value_t = 0.4)]
-    river_wander: f64,
+    /// perfectly regular. Which way it strays is picked by --seed [default: 0.4]
+    #[arg(long)]
+    river_wander: Option<f64>,
 
-    /// River opacity
-    #[arg(long, default_value_t = 1.0)]
-    river_opacity: f64,
+    /// River opacity [default: 1]
+    #[arg(long)]
+    river_opacity: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -261,20 +276,14 @@ struct RoadArgs {
     #[arg(long)]
     no_roads: bool,
 
-    /// Road classes, '<char> <color> <width> <dash> [name]' per line; the width and the dash lengths are fractions of
-    /// hex width, and a dash of 'none' draws a solid line. Where two classes meet, the narrower one is drawn up to the
-    /// centre of the wider one's hex [default: roads or roads.txt in the current directory]
-    #[arg(long, value_name = "FILE", conflicts_with = "no_roads")]
-    road_classes: Option<PathBuf>,
-
     /// How far a road strays from the straight run between hex centres, as a fraction of hex radius; 0 draws it
-    /// perfectly regular. Which way it strays is picked by --seed
-    #[arg(long, default_value_t = 0.25)]
-    road_wander: f64,
+    /// perfectly regular. Which way it strays is picked by --seed [default: 0.25]
+    #[arg(long)]
+    road_wander: Option<f64>,
 
-    /// Road opacity
-    #[arg(long, default_value_t = 1.0)]
-    road_opacity: f64,
+    /// Road opacity [default: 1]
+    #[arg(long)]
+    road_opacity: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -289,39 +298,34 @@ struct BorderArgs {
     #[arg(long)]
     no_borders: bool,
 
-    /// Border types, '<char> <color> <width> <dash> [name]' per line; the width and the dash lengths are fractions of
-    /// hex width, and a dash of 'none' draws a solid line [default: borders or borders.txt in the current directory]
-    #[arg(long, value_name = "FILE", conflicts_with = "no_borders")]
-    border_types: Option<PathBuf>,
-
-    /// Border opacity
-    #[arg(long, default_value_t = 1.0)]
-    border_opacity: f64,
+    /// Border opacity [default: 1]
+    #[arg(long)]
+    border_opacity: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
 #[command(next_help_heading = "Labels")]
 struct LabelArgs {
-    /// Feature label colour
-    #[arg(long, default_value = "#1b1b1b")]
-    label_color: String,
+    /// Feature label colour [default: #1b1b1b]
+    #[arg(long)]
+    label_color: Option<String>,
 
     /// Font family for feature labels, as a CSS stack, e.g. "IM FELL English, Georgia, serif". The font must be
     /// installed wherever the SVG is rendered
-    #[arg(long, default_value = "serif")]
-    label_font: String,
+    #[arg(long)]
+    label_font: Option<String>,
 
-    /// Label size as a fraction of hex width
-    #[arg(long, default_value_t = 0.26)]
-    label_size: f64,
+    /// Label size as a fraction of hex width [default: 0.26]
+    #[arg(long)]
+    label_size: Option<f64>,
 
-    /// normal, bold, or a number like 600
-    #[arg(long, default_value = "normal")]
-    label_weight: String,
+    /// normal, bold, or a number like 600 [default: normal]
+    #[arg(long)]
+    label_weight: Option<String>,
 
-    /// normal or italic
-    #[arg(long, default_value = "normal")]
-    label_style: String,
+    /// normal or italic [default: normal]
+    #[arg(long)]
+    label_style: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -338,21 +342,21 @@ struct CoordsArgs {
     )]
     coords: Option<CoordsAlign>,
 
-    /// Font for coordinates
-    #[arg(long, default_value = "monospace")]
-    coords_font: String,
+    /// Font for coordinates [default: monospace]
+    #[arg(long)]
+    coords_font: Option<String>,
 
-    /// Coordinate size as a fraction of hex width
-    #[arg(long, default_value_t = 0.2)]
-    coords_size: f64,
+    /// Coordinate size as a fraction of hex width [default: 0.2]
+    #[arg(long)]
+    coords_size: Option<f64>,
 
-    /// Coordinate colour
-    #[arg(long, default_value = "#000")]
-    coords_color: String,
+    /// Coordinate colour [default: #000]
+    #[arg(long)]
+    coords_color: Option<String>,
 
-    /// Coordinate opacity
-    #[arg(long, default_value_t = 0.55)]
-    coords_opacity: f64,
+    /// Coordinate opacity [default: 0.55]
+    #[arg(long)]
+    coords_opacity: Option<f64>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,34 +401,44 @@ struct Feature {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let palette_path = found(args.palette.as_deref(), &["palette", "palette.txt"], Path::is_file)
-        .ok_or("no palette given, and no palette or palette.txt in the current directory")?;
-    let palette = map::read_palette(&palette_path)?;
+    let defs_path = found(args.defs.as_deref(), &["hexxy", "hexxy.txt"], Path::is_file)
+        .ok_or("no definitions given, and no hexxy or hexxy.txt in the current directory")?;
+    let file = defs_path.display().to_string();
+    let text = defs::read(&defs_path)?;
+    let defs = Defs::parse(&text, &file)?;
+    let palette = map::parse_palette(defs.required("palette")?, &file)?;
+
+    // The file holds this map's defaults and the flags overrule them, so everything drawn is settled before anything
+    // is drawn.
+    let mut settings = Settings::default();
+    settings.apply(&defs, &file)?;
+    settings.apply_flags(&args);
+
     let map = map::read_map(&args.map, &palette, args.top)?;
 
     // Foundry sets a hexagon's centre-to-vertex size to gridSize/sqrt(3), making a pointy-top hex exactly gridSize
     // wide and a flat-top hex exactly gridSize tall. Its grid starts at the scene origin, so the map has no margin.
-    let radius = args.grid_size / 3f64.sqrt();
+    let radius = settings.grid.size / 3f64.sqrt();
     let (layout, size) = Layout::fit(args.top, radius, map.hexes.iter().map(|hex| hex.axial));
 
     let symbols_dir =
-        if args.icons.no_symbols { None } else { found(args.icons.symbols.as_deref(), &["symbols"], Path::is_dir) };
-    let features_path = if args.icons.no_features {
+        if settings.icons.draw { found(args.icons.symbols.as_deref(), &["symbols"], Path::is_dir) } else { None };
+    let features_path = if !settings.icons.features {
         None
     } else {
         args.icons.features.clone().or_else(|| Some(sidecar_for(&args.map, ".features.txt")).filter(|p| p.is_file()))
     };
-    let rivers_path = if args.rivers.no_rivers {
+    let rivers_path = if !settings.rivers.draw {
         None
     } else {
         args.rivers.rivers.clone().or_else(|| Some(sidecar_for(&args.map, ".rivers.txt")).filter(|p| p.is_file()))
     };
-    let roads_path = if args.roads.no_roads {
+    let roads_path = if !settings.roads.draw {
         None
     } else {
         args.roads.roads.clone().or_else(|| Some(sidecar_for(&args.map, ".roads.txt")).filter(|p| p.is_file()))
     };
-    let borders_path = if args.borders.no_borders {
+    let borders_path = if !settings.borders.draw {
         None
     } else {
         args.borders.borders.clone().or_else(|| Some(sidecar_for(&args.map, ".borders.txt")).filter(|p| p.is_file()))
@@ -449,71 +463,53 @@ pub fn run(args: Args) -> Result<(), String> {
     let courses = match &rivers_path {
         Some(path) => {
             let channel = Channel {
-                headwater: args.rivers.river_width * layout.hex_width(),
-                max: args.rivers.river_max_width * layout.hex_width(),
+                headwater: settings.rivers.width * layout.hex_width(),
+                max: settings.rivers.max_width * layout.hex_width(),
             };
             let wander = Wander {
-                amount: args.rivers.river_wander,
+                amount: settings.rivers.wander,
                 seed: args.seed,
                 crossing_tag: rivers::CROSSING,
                 bend_tag: rivers::BEND,
             };
-            rivers::read_rivers(path, &map, &layout, args.top, args.rivers.river_mouth, channel, &wander)?
+            rivers::read_rivers(path, &map, &layout, args.top, settings.rivers.mouth, channel, &wander)?
         }
         None => Vec::new(),
     };
 
-    // The grid says where a way runs and the classes file says how it is drawn, so roads need both, the way borders
-    // do. Looking the classes file up only when there is a grid keeps a stray roads.txt from mattering to a map with
-    // no roads on it.
+    // The grid says where a way runs and [road.classes] says how it is drawn, so roads need both. Asking for the
+    // section only when there is a grid keeps a map with no roads on it from needing one.
     let (road_classes, ways) = match &roads_path {
-        Some(path) => {
-            let classes_path = found(args.roads.road_classes.as_deref(), &["roads", "roads.txt"], Path::is_file)
-                .ok_or(
-                    "the roads grid names its classes, so it needs a road classes file: pass --road-classes, or put \
-                     roads or roads.txt in the current directory (or pass --no-roads)",
-                )?;
-            // roads.txt in the current directory is the classes and MAP.roads.txt is the grid, which only collide for
-            // a map named roads; reading one as the other would go wrong in a way that took explaining.
-            if classes_path == *path {
-                return Err(format!(
-                    "{} cannot be both the road classes and the roads grid; name one of them with --road-classes or \
-                     --roads",
-                    path.display()
-                ));
-            }
-            let classes = roads::read_classes(&classes_path)?;
+        Some(_) => {
+            let classes = roads::parse_classes(
+                defs.required("road.classes").map_err(|err| {
+                    format!("{err}: the roads grid names its classes, so one is needed (or pass --no-roads)")
+                })?,
+                &file,
+            )?;
             let wander = Wander {
-                amount: args.roads.road_wander,
+                amount: settings.roads.wander,
                 seed: args.seed,
                 crossing_tag: roads::CROSSING,
                 bend_tag: roads::BEND,
             };
-            let ways = roads::read_roads(path, &map, &layout, args.top, &classes, &wander)?;
+            let ways =
+                roads::read_roads(roads_path.as_ref().expect("checked"), &map, &layout, args.top, &classes, &wander)?;
             (classes, ways)
         }
         None => (Vec::new(), Vec::new()),
     };
 
-    // The grid says where an area is and the types file says how it is drawn, so borders need both. Looking the types
-    // file up only when there is a grid keeps a stray borders.txt from mattering to a map with no borders on it.
+    // The grid says where an area is and [border.types] says how it is drawn, so borders need both. Asking for the
+    // section only when there is a grid keeps a map with no borders on it from needing one.
     let (border_types, borders) = match &borders_path {
         Some(path) => {
-            let types_path = found(args.borders.border_types.as_deref(), &["borders", "borders.txt"], Path::is_file)
-                .ok_or(
-                    "the borders grid names its types, so it needs a border types file: pass --border-types, or put \
-                     borders or borders.txt in the current directory (or pass --no-borders)",
-                )?;
-            // borders.txt in the current directory is the types and MAP.borders.txt is the grid, which only collide for
-            // a map named borders; reading one as the other would go wrong in a way that took explaining.
-            if types_path == *path {
-                return Err(format!(
-                    "{} cannot be both the border types and the borders grid; name one of them with --border-types or \
-                     --borders",
-                    path.display()
-                ));
-            }
-            let types = borders::read_types(&types_path)?;
+            let types = borders::parse_types(
+                defs.required("border.types").map_err(|err| {
+                    format!("{err}: the borders grid names its types, so one is needed (or pass --no-borders)")
+                })?,
+                &file,
+            )?;
             let rings = borders::read_borders(path, &map, &layout, args.top, &types)?;
             (types, rings)
         }
@@ -521,7 +517,7 @@ pub fn run(args: Args) -> Result<(), String> {
     };
 
     let scene = Scene {
-        args: &args,
+        settings: &settings,
         layout,
         size,
         hexes: &map.hexes,
@@ -536,7 +532,7 @@ pub fn run(args: Args) -> Result<(), String> {
     fs::write(&args.output, scene.to_string())
         .map_err(|err| format!("could not write {}: {err}", args.output.display()))?;
 
-    print_foundry_settings(&args, &map, size);
+    print_foundry_settings(&args, &settings, &map, size);
 
     let mut counts: BTreeMap<Cow<str>, usize> = BTreeMap::new();
     for hex in &map.hexes {
@@ -601,7 +597,7 @@ fn variant(seed: u64, key: u64, count: usize) -> usize {
 }
 
 /// Prints the Foundry VTT scene settings that line its grid up with the image.
-fn print_foundry_settings(args: &Args, map: &Map, size: Point) {
+fn print_foundry_settings(args: &Args, settings: &Settings, map: &Map, size: Point) {
     // Foundry numbers the first row of the image as row 1, not row 0, so a map starting on an indented row is one
     // where the ODD rows are offset. Verified against Foundry; getting this backwards puts the whole grid half a hex
     // out. Columns are assumed to follow the same rule.
@@ -613,14 +609,14 @@ fn print_foundry_settings(args: &Args, map: &Map, size: Point) {
 
     println!("\nFoundry VTT scene settings");
     println!("  Grid Type          Hexagonal {grid_type}, {parity}");
-    println!("  Grid Size          {}", Num(args.grid_size));
+    println!("  Grid Size          {}", Num(settings.grid.size));
     println!("  Background offsets 0 and 0");
     println!("  Padding            0");
     println!("  Image dimensions   {} x {}", Num(size.x), Num(size.y));
     if map.starts_offset {
         println!("\n  note: the map's first {line} is offset. If the grid sits half a hex out, try 'Even' instead.");
     }
-    if args.grid_size < 50.0 {
+    if settings.grid.size < 50.0 {
         warn("Foundry's minimum grid size is 50px; use --grid-size 50 or more");
     }
 }

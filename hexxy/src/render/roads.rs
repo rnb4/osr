@@ -22,19 +22,13 @@ pub const BEND: u64 = 21;
 /// One kind of way, named by the character standing for it on the grid; see [`super::stroke::Kind`].
 pub type Class = super::stroke::Kind;
 
-pub fn read_classes(path: &Path) -> Result<Vec<Class>, String> {
-    let text =
-        fs::read_to_string(path).map_err(|err| format!("could not read road classes {}: {err}", path.display()))?;
-    parse_classes(text.as_str(), path.display())
-}
-
 /// Parses '<char> <color> <width> <dash> [name]' lines.
 ///
 /// The classes are kept in a file rather than given as flags, the way the palette and the border types are: a map with
 /// a highway, a road and a trail on it wants the list written down once, not retyped on every run.
 ///
 /// The classes stay in the order they were written, because that is the order they are drawn in.
-fn parse_classes<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Vec<Class>, String> {
+pub fn parse_classes<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Vec<Class>, String> {
     let lines = lines.into();
     let mut classes: Vec<Class> = Vec::new();
     for (line, n) in lines.iter() {

@@ -258,6 +258,131 @@ impl Settings {
         Ok(())
     }
 
+    /// Applies the flags, over whatever the file and the defaults left.
+    ///
+    /// A `--no-…` flag can only turn its layer off: clap cannot tell an absent one from a false one, so a file
+    /// saying `draw false` cannot be turned back on from the command line.
+    pub fn apply_flags(&mut self, args: &super::Args) {
+        let (grid, atlas, rivers, roads) = (&args.grid, &args.atlas, &args.rivers, &args.roads);
+        let (borders, icons, labels, coords) = (&args.borders, &args.icons, &args.labels, &args.coords);
+
+        if let Some(size) = args.grid_size {
+            self.grid.size = size;
+        }
+        if grid.no_grid {
+            self.grid.draw = false;
+        }
+        if let Some(color) = &grid.grid_color {
+            self.grid.color = color.clone();
+        }
+        if let Some(width) = grid.grid_width {
+            self.grid.width = Some(width);
+        }
+        if let Some(opacity) = grid.grid_opacity {
+            self.grid.opacity = opacity;
+        }
+        if let Some(background) = &grid.background {
+            self.grid.background = Some(background.clone());
+        }
+
+        if let Some(offset) = atlas.atlas {
+            self.atlas.offset = Some(offset);
+        }
+        if let Some(color) = &atlas.atlas_color {
+            self.atlas.color = color.clone();
+        }
+        if let Some(width) = atlas.atlas_width {
+            self.atlas.width = Some(width);
+        }
+        if let Some(opacity) = atlas.atlas_opacity {
+            self.atlas.opacity = opacity;
+        }
+
+        if rivers.no_rivers {
+            self.rivers.draw = false;
+        }
+        if let Some(color) = &rivers.river_color {
+            self.rivers.color = color.clone();
+        }
+        if let Some(width) = rivers.river_width {
+            self.rivers.width = width;
+        }
+        if let Some(max) = rivers.river_max_width {
+            self.rivers.max_width = max;
+        }
+        if let Some(wander) = rivers.river_wander {
+            self.rivers.wander = wander;
+        }
+        if let Some(opacity) = rivers.river_opacity {
+            self.rivers.opacity = opacity;
+        }
+        if let Some(mouth) = rivers.river_mouth {
+            self.rivers.mouth = mouth;
+        }
+
+        if roads.no_roads {
+            self.roads.draw = false;
+        }
+        if let Some(wander) = roads.road_wander {
+            self.roads.wander = wander;
+        }
+        if let Some(opacity) = roads.road_opacity {
+            self.roads.opacity = opacity;
+        }
+
+        if borders.no_borders {
+            self.borders.draw = false;
+        }
+        if let Some(opacity) = borders.border_opacity {
+            self.borders.opacity = opacity;
+        }
+
+        if icons.no_symbols {
+            self.icons.draw = false;
+        }
+        if icons.no_features {
+            self.icons.features = false;
+        }
+        if let Some(scale) = icons.icon_scale {
+            self.icons.scale = scale;
+        }
+        if let Some(scale) = icons.feature_scale {
+            self.icons.feature_scale = scale;
+        }
+
+        if let Some(color) = &labels.label_color {
+            self.labels.color = color.clone();
+        }
+        if let Some(font) = &labels.label_font {
+            self.labels.font = font.clone();
+        }
+        if let Some(size) = labels.label_size {
+            self.labels.size = size;
+        }
+        if let Some(weight) = &labels.label_weight {
+            self.labels.weight = weight.clone();
+        }
+        if let Some(style) = &labels.label_style {
+            self.labels.style = style.clone();
+        }
+
+        if let Some(show) = coords.coords {
+            self.coords.show = Some(show);
+        }
+        if let Some(font) = &coords.coords_font {
+            self.coords.font = font.clone();
+        }
+        if let Some(size) = coords.coords_size {
+            self.coords.size = size;
+        }
+        if let Some(color) = &coords.coords_color {
+            self.coords.color = color.clone();
+        }
+        if let Some(opacity) = coords.coords_opacity {
+            self.coords.opacity = opacity;
+        }
+    }
+
     /// Applies the settings sections of the definitions file, over the built-in defaults.
     pub fn apply(&mut self, defs: &Defs, file: impl Display) -> Result<(), String> {
         for section in SETTINGS {

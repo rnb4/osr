@@ -28,19 +28,13 @@ pub struct Border {
 /// A corner named the same way by all three hexes holding it; see [`Layout::vertex`].
 type Vertex = (Axial, usize);
 
-pub fn read_types(path: &Path) -> Result<Vec<Type>, String> {
-    let text =
-        fs::read_to_string(path).map_err(|err| format!("could not read border types {}: {err}", path.display()))?;
-    parse_types(text.as_str(), path.display())
-}
-
 /// Parses '<char> <color> <width> <dash> [name]' lines.
 ///
 /// The types are kept in a file rather than given as flags, the way the palette and the road classes are: a map with a
 /// kingdom, three duchies and a disputed march on it wants the list written down once, not retyped on every run.
 ///
 /// The types stay in the order they were written, because that is the order they are drawn in.
-fn parse_types<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Vec<Type>, String> {
+pub fn parse_types<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Vec<Type>, String> {
     let lines = lines.into();
     let mut types: Vec<Type> = Vec::new();
     for (line, n) in lines.iter() {
