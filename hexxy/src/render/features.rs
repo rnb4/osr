@@ -3,8 +3,8 @@
 use std::{collections::HashMap, fmt::Display, fs, path::Path};
 
 use crate::{
-    hex::Axial,
     defs::content_lines,
+    hex::Axial,
     map::{Coord, Map},
 };
 
