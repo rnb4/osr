@@ -5,6 +5,7 @@ mod course;
 mod features;
 mod rivers;
 mod roads;
+mod settings;
 mod stroke;
 mod svg;
 mod symbols;
