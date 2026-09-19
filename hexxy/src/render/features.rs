@@ -4,7 +4,8 @@ use std::{collections::HashMap, fmt::Display, fs, path::Path};
 
 use crate::{
     hex::Axial,
-    map::{Coord, Map, content_lines},
+    defs::content_lines,
+    map::{Coord, Map},
 };
 
 #[derive(Debug)]

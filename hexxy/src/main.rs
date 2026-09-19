@@ -1,3 +1,4 @@
+mod defs;
 mod generate;
 mod hex;
 mod map;

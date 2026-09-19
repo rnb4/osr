@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use crate::map::{Palette, content_lines};
+use crate::{defs::content_lines, map::Palette};
 
 /// What shows up alongside a terrain when it is an atlas hex's primary terrain, and how the terrain is drawn.
 #[derive(Debug)]
@@ -51,7 +51,7 @@ pub struct Rules {
 impl Rules {
     pub fn read(path: &Path, palette: &Palette) -> Result<Rules, String> {
         let text = fs::read_to_string(path).map_err(|err| format!("could not read rules {}: {err}", path.display()))?;
-        Rules::parse(&text, path.display(), palette)
+        Rules::parse(text.as_str(), path.display(), palette)
     }
 
     /// Parses `[terrain]` blocks of `secondary`, `tertiary`, `wildcard`, `variants` and `beside` lines, checking every

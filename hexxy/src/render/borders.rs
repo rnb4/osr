@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::{
+    defs::Lines,
     hex::{Axial, Layout, Point, Top},
     map::{self, Map},
 };
@@ -30,7 +31,7 @@ type Vertex = (Axial, usize);
 pub fn read_types(path: &Path) -> Result<Vec<Type>, String> {
     let text =
         fs::read_to_string(path).map_err(|err| format!("could not read border types {}: {err}", path.display()))?;
-    parse_types(&text, path.display())
+    parse_types(text.as_str(), path.display())
 }
 
 /// Parses '<char> <color> <width> <dash> [name]' lines.
@@ -39,9 +40,10 @@ pub fn read_types(path: &Path) -> Result<Vec<Type>, String> {
 /// kingdom, three duchies and a disputed march on it wants the list written down once, not retyped on every run.
 ///
 /// The types stay in the order they were written, because that is the order they are drawn in.
-fn parse_types(text: &str, file: impl Display) -> Result<Vec<Type>, String> {
+fn parse_types<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Vec<Type>, String> {
+    let lines = lines.into();
     let mut types: Vec<Type> = Vec::new();
-    for (line, n) in map::content_lines(text) {
+    for (line, n) in lines.iter() {
         let kind = super::stroke::parse_kind(line, "border type", "k #7a3b3b 0.08 none kingdom")
             .map_err(|err| format!("{file}:{n}: {err}"))?;
         if types.iter().any(|existing| existing.key == kind.key) {

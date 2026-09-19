@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::{
+    defs::Lines,
     hex::{Axial, Top},
     warn,
 };
@@ -64,7 +65,7 @@ pub struct Map<'a> {
 
 pub fn read_palette(path: &Path) -> Result<Palette, String> {
     let text = fs::read_to_string(path).map_err(|err| format!("could not read palette {}: {err}", path.display()))?;
-    parse_palette(&text, path.display())
+    parse_palette(text.as_str(), path.display())
 }
 
 pub fn read_map<'a>(path: &Path, palette: &'a Palette, top: Top) -> Result<Map<'a>, String> {
@@ -72,18 +73,11 @@ pub fn read_map<'a>(path: &Path, palette: &'a Palette, top: Top) -> Result<Map<'
     parse_map(&text, path.display(), palette, top)
 }
 
-/// Lines that are not blank or comments (starting with # or //), with their line numbers.
-pub fn content_lines(text: &str) -> impl Iterator<Item = (&str, usize)> {
-    text.lines().zip(1..).filter(|(line, _)| {
-        let line = line.trim();
-        !(line.is_empty() || line.starts_with('#') || line.starts_with("//"))
-    })
-}
-
 /// Parses '<char> <color> [name]' lines.
-pub fn parse_palette(text: &str, file: impl Display) -> Result<Palette, String> {
+pub fn parse_palette<'a>(lines: impl Into<Lines<'a>>, file: impl Display) -> Result<Palette, String> {
+    let lines = lines.into();
     let mut palette = Palette::new();
-    for (line, n) in content_lines(text) {
+    for (line, n) in lines.iter() {
         let mut fields = line.split_whitespace();
         let (Some(key), Some(color)) = (fields.next(), fields.next()) else {
             return Err(format!("{file}:{n}: expected '<char> <color> [name]'"));
