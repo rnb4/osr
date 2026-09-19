@@ -21,12 +21,32 @@ pub const BEND: u64 = 21;
 /// One kind of way, named by the character standing for it on the grid; see [`super::stroke::Kind`].
 pub type Class = super::stroke::Kind;
 
-/// Parses one `--road-class` value, '<char> <color> <width> <dash> [name]'.
+pub fn read_classes(path: &Path) -> Result<Vec<Class>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|err| format!("could not read road classes {}: {err}", path.display()))?;
+    parse_classes(&text, path.display())
+}
+
+/// Parses '<char> <color> <width> <dash> [name]' lines.
 ///
-/// One line's worth per flag, because a map with a highway, a road and a trail on it wants three of these and nothing
-/// more; borders keep the same grammar in a file of their own.
-pub fn parse_class(text: &str) -> Result<Class, String> {
-    super::stroke::parse_kind(text, "road class", "t #6b4f2a 0.05 0.18,0.12 trail")
+/// The classes are kept in a file rather than given as flags, the way the palette and the border types are: a map with
+/// a highway, a road and a trail on it wants the list written down once, not retyped on every run.
+///
+/// The classes stay in the order they were written, because that is the order they are drawn in.
+fn parse_classes(text: &str, file: impl Display) -> Result<Vec<Class>, String> {
+    let mut classes: Vec<Class> = Vec::new();
+    for (line, n) in map::content_lines(text) {
+        let class = super::stroke::parse_kind(line, "road class", "t #6b4f2a 0.05 0.18,0.12 trail")
+            .map_err(|err| format!("{file}:{n}: {err}"))?;
+        if classes.iter().any(|existing| existing.key == class.key) {
+            return Err(format!("{file}:{n}: duplicate road class '{}'", class.key));
+        }
+        classes.push(class);
+    }
+    if classes.is_empty() {
+        return Err(format!("{file}: no road classes"));
+    }
+    Ok(classes)
 }
 
 /// One run of road, as the curve a stroke follows.
@@ -89,11 +109,6 @@ fn road_hexes(
     top: Top,
     classes: &[Class],
 ) -> Result<BTreeMap<Axial, (usize, Coord)>, String> {
-    let mut duplicates = BTreeSet::new();
-    if let Some(key) = classes.iter().map(|class| class.key).find(|key| !duplicates.insert(*key)) {
-        return Err(format!("two road classes both use '{key}'"));
-    }
-
     let mut hexes = BTreeMap::new();
     let mut unknown: BTreeMap<char, Vec<String>> = BTreeMap::new();
     for (axial, cell) in map::place_grid(text, &file, map, top)? {
@@ -118,7 +133,7 @@ fn road_hexes(
             .collect();
         let known: Vec<String> = classes.iter().map(|class| format!("'{}' {}", class.key, class.name)).collect();
         return Err(format!(
-            "unknown road characters (add a --road-class for them; so far {}):\n{}",
+            "unknown road characters (add them to the road classes file; so far {}):\n{}",
             known.join(", "),
             lines.join("\n")
         ));
@@ -201,7 +216,7 @@ fn link(a: Axial, b: Axial) -> (Axial, Axial) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Class, Road, parse_class, parse_roads};
+    use super::{Class, Road, parse_classes, parse_roads};
     use crate::{
         hex::{Layout, Point, Top},
         map::{Map, Palette, parse_map, parse_palette},
@@ -213,6 +228,8 @@ mod tests {
     // Four columns by three rows, the same fixture the rivers use.
     const MAP: &str = "g g g g\n g g g g\ng g g ~\n";
 
+    const CLASSES: &str = "R #6b4f2a 0.09 none road\nt #6b4f2a 0.05 0.18,0.12 trail\n";
+
     fn palette() -> Palette {
         parse_palette(PALETTE, "p").unwrap()
     }
@@ -222,7 +239,7 @@ mod tests {
     }
 
     fn classes() -> Vec<Class> {
-        vec![parse_class("R #6b4f2a 0.09 none road").unwrap(), parse_class("t #6b4f2a 0.05 0.18,0.12 trail").unwrap()]
+        parse_classes(CLASSES, "r").unwrap()
     }
 
     fn wander(amount: f64) -> Wander {
@@ -362,28 +379,27 @@ mod tests {
     }
 
     #[test]
-    fn class_specs_are_checked() {
-        let class = parse_class("t #6b4f2a 0.05 0.18,0.12 mule trail").unwrap();
-        assert_eq!((class.key, class.name.as_str(), class.dash.len()), ('t', "mule trail", 2));
-        assert_eq!(parse_class("R #6b4f2a 0.09 none").unwrap().name, "R", "an unnamed class is called after its key");
-        assert!(parse_class("R #6b4f2a 0.09").is_err(), "a spec needs a dash");
-        assert!(parse_class("RR #6b4f2a 0.09 none").unwrap_err().contains("one character"));
-        assert!(parse_class(". #6b4f2a 0.09 none").unwrap_err().contains("no hex here"));
-        assert!(parse_class("R #6b4f2a 0 none").unwrap_err().contains("more than zero"));
-        assert!(parse_class("R #6b4f2a wide none").is_err());
-        assert!(parse_class("R #6b4f2a 0.09 3,x").is_err());
-    }
+    fn class_files_are_checked() {
+        let classes = classes();
+        assert_eq!(classes.iter().map(|class| class.key).collect::<Vec<char>>(), ['R', 't']);
+        assert_eq!(classes[0].name, "road");
+        assert!(classes[0].dash.is_empty());
+        assert_eq!(classes[1].dash, [0.18, 0.12]);
+        assert_eq!(parse_classes("t #6b4f2a 0.05 0.18,0.12 mule trail\n", "r").unwrap()[0].name, "mule trail");
+        assert_eq!(
+            parse_classes("R #6b4f2a 0.09 none\n", "r").unwrap()[0].name,
+            "R",
+            "an unnamed class is called after its key"
+        );
 
-    #[test]
-    fn two_classes_cannot_share_a_character() {
-        let palette = palette();
-        let map = parse_map(MAP, "m", &palette, Top::Pointy).unwrap();
-        let layout = layout(&map);
-        let classes =
-            vec![parse_class("R #000 0.09 none road").unwrap(), parse_class("R #fff 0.05 none path").unwrap()];
-
-        let err = parse_roads("R R . .\n . . . .\n. . . .\n", "d", &map, &layout, Top::Pointy, &classes, &wander(0.0))
-            .unwrap_err();
-        assert!(err.contains("both use 'R'"), "{err}");
+        let err = |text: &str| parse_classes(text, "r").unwrap_err();
+        assert!(err("R #000 0.09 none road\nR #fff 0.05 none path\n").contains("r:2: duplicate road class 'R'"));
+        assert!(err("# only a comment\n").contains("r: no road classes"));
+        assert!(err(". #6b4f2a 0.09 none").contains("r:1: '.' means \"no hex here\""));
+        assert!(err("RR #6b4f2a 0.09 none").contains("r:1: road class key must be one character"));
+        assert!(err("R #6b4f2a 0 none").contains("r:1: width must be a number more than zero"));
+        assert!(err("R #6b4f2a 0.09").contains("r:1: expected '<char> <color> <width> <dash> [name]'"));
+        assert!(err("R #6b4f2a wide none").contains("r:1: width"));
+        assert!(err("R #6b4f2a 0.09 3,x").contains("r:1: dash"));
     }
 }

@@ -28,7 +28,6 @@ use crate::{
 use course::Wander;
 use features::FeatureSpec;
 use rivers::Channel;
-use roads::Class;
 use svg::{Num, Scene};
 use symbols::{Symbol, Symbols};
 
@@ -68,8 +67,9 @@ joins. Adjacent river hexes always join into one network, so two separate rivers
 layer stays editable for drawing more by hand.
 
 Roads are drawn from a third staggered grid, MAP.roads.txt beside the map, and run through hex centres the same way. \
-Each character names a kind of way given by --road-class, 'R' road and 't' trail unless others are given, and every \
-pair of neighbouring road hexes is joined. Where two kinds meet, the narrower one is drawn up to the centre of the \
+Each character names a class from a road classes file, roads or roads.txt in the current directory unless \
+--road-classes says otherwise, one '<char> <color> <width> <dash> [name]' per line like the palette, and every pair \
+of neighbouring road hexes is joined. Where two classes meet, the narrower one is drawn up to the centre of the \
 wider one's hex, so a trail joining a road meets it without a seam. A way is stroked at one width, so unlike a river \
 it can be dashed, and a whole run is one path so the dashes carry along it.
 
@@ -260,16 +260,11 @@ struct RoadArgs {
     #[arg(long)]
     no_roads: bool,
 
-    /// A kind of way, as '<char> <color> <width> <dash> [name]', repeatable. The width and the dash lengths are
-    /// fractions of hex width, and a dash of 'none' draws a solid line. Where two kinds meet, the narrower one is
-    /// drawn up to the centre of the wider one's hex
-    #[arg(
-        long,
-        value_name = "SPEC",
-        value_parser = roads::parse_class,
-        default_values = ["R #6b4f2a 0.09 none road", "t #6b4f2a 0.05 0.18,0.12 trail"],
-    )]
-    road_class: Vec<Class>,
+    /// Road classes, '<char> <color> <width> <dash> [name]' per line; the width and the dash lengths are fractions of
+    /// hex width, and a dash of 'none' draws a solid line. Where two classes meet, the narrower one is drawn up to the
+    /// centre of the wider one's hex [default: roads or roads.txt in the current directory]
+    #[arg(long, value_name = "FILE", conflicts_with = "no_roads")]
+    road_classes: Option<PathBuf>,
 
     /// How far a road strays from the straight run between hex centres, as a fraction of hex radius; 0 draws it
     /// perfectly regular. Which way it strays is picked by --seed
@@ -467,17 +462,36 @@ pub fn run(args: Args) -> Result<(), String> {
         None => Vec::new(),
     };
 
-    let ways = match &roads_path {
+    // The grid says where a way runs and the classes file says how it is drawn, so roads need both, the way borders
+    // do. Looking the classes file up only when there is a grid keeps a stray roads.txt from mattering to a map with
+    // no roads on it.
+    let (road_classes, ways) = match &roads_path {
         Some(path) => {
+            let classes_path = found(args.roads.road_classes.as_deref(), &["roads", "roads.txt"], Path::is_file)
+                .ok_or(
+                    "the roads grid names its classes, so it needs a road classes file: pass --road-classes, or put \
+                     roads or roads.txt in the current directory (or pass --no-roads)",
+                )?;
+            // roads.txt in the current directory is the classes and MAP.roads.txt is the grid, which only collide for
+            // a map named roads; reading one as the other would go wrong in a way that took explaining.
+            if classes_path == *path {
+                return Err(format!(
+                    "{} cannot be both the road classes and the roads grid; name one of them with --road-classes or \
+                     --roads",
+                    path.display()
+                ));
+            }
+            let classes = roads::read_classes(&classes_path)?;
             let wander = Wander {
                 amount: args.roads.road_wander,
                 seed: args.seed,
                 crossing_tag: roads::CROSSING,
                 bend_tag: roads::BEND,
             };
-            roads::read_roads(path, &map, &layout, args.top, &args.roads.road_class, &wander)?
+            let ways = roads::read_roads(path, &map, &layout, args.top, &classes, &wander)?;
+            (classes, ways)
         }
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
 
     // The grid says where an area is and the types file says how it is drawn, so borders need both. Looking the types
@@ -514,6 +528,7 @@ pub fn run(args: Args) -> Result<(), String> {
         features: &features,
         rivers: &courses,
         roads: &ways,
+        road_classes: &road_classes,
         borders: &borders,
         border_types: &border_types,
     };

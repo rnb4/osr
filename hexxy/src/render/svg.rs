@@ -11,7 +11,7 @@ use super::{
     ATLAS_SCALE, Args, CoordsAlign, Feature, Icons,
     borders::{Border, Type},
     rivers::Course,
-    roads::Road,
+    roads::{Class, Road},
     symbols::SODIPODI_NS,
 };
 use crate::{
@@ -32,8 +32,10 @@ pub struct Scene<'a> {
     pub features: &'a [Feature],
     pub rivers: &'a [Course],
     pub roads: &'a [Road],
+    /// The classes the roads index into, in the order they are drawn.
+    pub road_classes: &'a [Class],
     pub borders: &'a [Border],
-    /// The types the borders index into. Unlike the road classes these are read from a file, not given as arguments.
+    /// The types the borders index into, in the order they are drawn.
     pub border_types: &'a [Type],
 }
 
@@ -305,7 +307,7 @@ impl Scene<'_> {
         let scale = self.layout.hex_width();
 
         open_layer(f, "Roads", "layer-roads")?;
-        for (class, kind) in roads.road_class.iter().enumerate() {
+        for (class, kind) in self.road_classes.iter().enumerate() {
             let ways: Vec<&Road> = self.roads.iter().filter(|road| road.class == class).collect();
             if ways.is_empty() {
                 continue;

@@ -35,8 +35,8 @@ pub fn read_types(path: &Path) -> Result<Vec<Type>, String> {
 
 /// Parses '<char> <color> <width> <dash> [name]' lines.
 ///
-/// Border types are kept in a file rather than given as flags the way road classes are: a map with a kingdom, three
-/// duchies and a disputed march on it wants the list written down beside it, not retyped on every run.
+/// The types are kept in a file rather than given as flags, the way the palette and the road classes are: a map with a
+/// kingdom, three duchies and a disputed march on it wants the list written down once, not retyped on every run.
 ///
 /// The types stay in the order they were written, because that is the order they are drawn in.
 fn parse_types(text: &str, file: impl Display) -> Result<Vec<Type>, String> {
