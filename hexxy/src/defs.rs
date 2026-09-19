@@ -3,7 +3,7 @@
 //! A section is not a contiguous string once it has been cut out of the file, but its lines still have to be reported
 //! at the numbers the file wrote them at, so [`Lines`] carries the two together.
 
-use std::{collections::BTreeMap, fmt::Display};
+use std::{collections::BTreeMap, fmt::Display, fs, path::Path};
 
 /// Lines that are not blank or comments (starting with # or //), with their line numbers.
 pub fn content_lines(text: &str) -> impl Iterator<Item = (&str, usize)> {
@@ -138,6 +138,11 @@ const SECTIONS: &[&str] = &[
 /// The prefix a terrain block's heading carries, as in `[terrain.forest]`.
 const TERRAIN: &str = "terrain.";
 
+/// Reads a definitions file. The text comes back rather than a `Defs`, because a `Defs` borrows it.
+pub fn read(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|err| format!("could not read definitions {}: {err}", path.display()))
+}
+
 /// The sections of one definitions file, looked up by name.
 #[derive(Debug)]
 pub struct Defs<'a> {
@@ -210,8 +215,11 @@ impl<'a> Defs<'a> {
 mod tests {
     use super::{Defs, Lines, split};
 
-    /// Every section's name, heading line and content, for comparing at a glance.
-    fn shape(text: &str) -> Vec<(String, usize, Vec<(&str, usize)>)> {
+    /// A section's name, the line its heading was on, and its content.
+    type Shape<'a> = (String, usize, Vec<(&'a str, usize)>);
+
+    /// Every section, for comparing at a glance.
+    fn shape(text: &str) -> Vec<Shape<'_>> {
         split(text, "d").unwrap().sections.into_iter().map(|s| (s.name, s.line, s.lines.iter().collect())).collect()
     }
 

@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    defs::{self, Defs},
     found,
     hex::{ATLAS_SCALE, Axial, Top},
     map,
@@ -27,7 +28,8 @@ terrain is the atlas hex's primary terrain, and generate fills it with 5-mile su
   12 half-hexes       shared with the neighbouring atlas hexes, rolled from the primary,
                       secondary and tertiary terrain of every atlas hex sharing them
 
-Secondary, tertiary and wildcard terrain come from the rules file, which also names the palette variants each terrain \
+Secondary, tertiary and wildcard terrain come from the [terrain.NAME] blocks of the definitions file, hexxy or \
+hexxy.txt in the current directory unless --defs says otherwise, which also name the [palette] variants each terrain \
 is drawn with. Secondary and tertiary terrain cluster toward neighbouring atlas hexes of that terrain.
 
 Rolls are seeded per atlas hex, so changing one atlas hex only changes its own sub-hexes and those of the atlas hexes \
@@ -42,13 +44,9 @@ pub struct Args {
     #[arg(short, long, default_value = "subhex.txt")]
     output: PathBuf,
 
-    /// Palette naming each map character [default: palette or palette.txt]
+    /// Definitions: the [palette] and the [terrain.NAME] blocks [default: hexxy or hexxy.txt]
     #[arg(long, value_name = "FILE")]
-    palette: Option<PathBuf>,
-
-    /// Terrain relationships and variants
-    #[arg(long, value_name = "FILE", default_value = "terrain.txt")]
-    rules: PathBuf,
+    defs: Option<PathBuf>,
 
     /// Hex orientation of both maps
     #[arg(long, value_enum, default_value_t)]
@@ -60,10 +58,13 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let palette_path = found(args.palette.as_deref(), &["palette", "palette.txt"], Path::is_file)
-        .ok_or("no palette given, and no palette or palette.txt in the current directory")?;
-    let palette = map::read_palette(&palette_path)?;
-    let rules = Rules::read(&args.rules, &palette)?;
+    let defs_path = found(args.defs.as_deref(), &["hexxy", "hexxy.txt"], Path::is_file)
+        .ok_or("no definitions given, and no hexxy or hexxy.txt in the current directory")?;
+    let file = defs_path.display().to_string();
+    let text = defs::read(&defs_path)?;
+    let defs = Defs::parse(&text, &file)?;
+    let palette = map::parse_palette(defs.required("palette")?, &file)?;
+    let rules = Rules::parse(&defs.terrain(), &file, &palette)?;
     let atlas = map::read_map(&args.atlas, &palette, args.top)?;
 
     // Each atlas hex's primary terrain, and the variant drawn for it, which its centre sub-hex keeps where it can.
@@ -72,7 +73,7 @@ pub fn run(args: Args) -> Result<(), String> {
     for hex in &atlas.hexes {
         let name = hex.terrain.name();
         let terrain = rules.terrain_of(&name).ok_or_else(|| {
-            format!("atlas hex {} is {name}, which no terrain in {} has as a variant", hex.coord, args.rules.display())
+            format!("atlas hex {} is {name}, which no [terrain.…] block in {file} has as a variant", hex.coord)
         })?;
         primaries.insert(hex.axial, terrain);
         drawn.insert(fill::centre(hex.axial), name.into_owned());

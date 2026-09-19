@@ -225,7 +225,7 @@ beside    other coast
 
     fn rules(text: &str) -> Rules {
         let palette = parse_palette(PALETTE, "p").unwrap();
-        Rules::parse(text, "r", &palette).unwrap()
+        Rules::parse(&crate::defs::split(text, "r").unwrap(), "r", &palette).unwrap()
     }
 
     #[test]

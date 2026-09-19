@@ -4,11 +4,9 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     fmt::Display,
-    fs,
-    path::Path,
 };
 
-use crate::{defs::content_lines, map::Palette};
+use crate::{defs::Split, map::Palette};
 
 /// What shows up alongside a terrain when it is an atlas hex's primary terrain, and how the terrain is drawn.
 #[derive(Debug)]
@@ -49,60 +47,58 @@ pub struct Rules {
 }
 
 impl Rules {
-    pub fn read(path: &Path, palette: &Palette) -> Result<Rules, String> {
-        let text = fs::read_to_string(path).map_err(|err| format!("could not read rules {}: {err}", path.display()))?;
-        Rules::parse(text.as_str(), path.display(), palette)
-    }
-
     /// Parses `[terrain]` blocks of `secondary`, `tertiary`, `wildcard`, `variants` and `beside` lines, checking every
     /// terrain they name has a block and every variant is in `palette`.
-    pub fn parse(text: &str, file: impl Display, palette: &Palette) -> Result<Rules, String> {
+    ///
+    /// The blocks arrive already cut apart, so what counts as a heading is the splitter's business; anything before
+    /// the first one is a line with no terrain to belong to.
+    pub fn parse(split: &Split<'_>, file: impl Display, palette: &Palette) -> Result<Rules, String> {
         let mut terrains: BTreeMap<String, Relations> = BTreeMap::new();
-        let mut current = None;
-        for (line, n) in content_lines(text) {
-            let line = line.split_once('#').map_or(line, |(before, _)| before).trim();
-            if let Some(name) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
-                let name = name.trim().to_string();
-                if terrains.contains_key(&name) {
-                    return Err(format!("{file}:{n}: [{name}] appears twice"));
-                }
-                terrains.insert(name.clone(), Relations::new(name.clone()));
-                current = Some(name);
-                continue;
+        if let Some((_, n)) = split.leading.first() {
+            return Err(format!("{file}:{n}: expected a [terrain] heading first"));
+        }
+        for section in &split.sections {
+            let name = &section.name;
+            if terrains.contains_key(name) {
+                return Err(format!("{file}:{}: [{name}] appears twice", section.line));
             }
-            let Some(relations) = current.as_ref().and_then(|name| terrains.get_mut(name)) else {
-                return Err(format!("{file}:{n}: expected a [terrain] heading first"));
-            };
+            terrains.insert(name.clone(), Relations::new(name.clone()));
+            let relations = terrains.get_mut(name).expect("just inserted");
 
-            let mut fields = line.split_whitespace();
-            let key = fields.next().unwrap_or_default();
-            let values: Vec<&str> = fields.collect();
-            let names = || values.iter().map(|value| value.to_string()).collect();
-            match key {
-                "secondary" => relations.secondary = names(),
-                "tertiary" => relations.tertiary = names(),
-                "wildcard" => relations.wildcard = names(),
-                "variants" => {
-                    relations.variants = parse_variants(&values).map_err(|err| format!("{file}:{n}: {err}"))?
-                }
-                "beside" => {
-                    let (target, variant, reach) = match values[..] {
-                        [target, variant] => (target, variant, "1"),
-                        [target, variant, reach] => (target, variant, reach),
-                        _ => return Err(format!("{file}:{n}: expected 'beside TERRAIN|other VARIANT [STEPS]'")),
-                    };
-                    let reach = reach
-                        .parse()
-                        .ok()
-                        .filter(|&reach| reach >= 1)
-                        .ok_or_else(|| format!("{file}:{n}: beside steps must be a whole number of at least 1"))?;
-                    let target = if target == "other" { Beside::Other } else { Beside::Terrain(target.to_string()) };
-                    relations.beside.push(BesideRule { target, variant: variant.to_string(), reach });
-                }
-                _ => {
-                    return Err(format!(
-                        "{file}:{n}: unknown key '{key}'; expected secondary, tertiary, wildcard, variants or beside"
-                    ));
+            for (line, n) in section.lines.iter() {
+                // A '#' comment can be stripped here, unlike in the sections whose values are colours.
+                let line = line.split_once('#').map_or(line, |(before, _)| before).trim();
+
+                let mut fields = line.split_whitespace();
+                let key = fields.next().unwrap_or_default();
+                let values: Vec<&str> = fields.collect();
+                let names = || values.iter().map(|value| value.to_string()).collect();
+                match key {
+                    "secondary" => relations.secondary = names(),
+                    "tertiary" => relations.tertiary = names(),
+                    "wildcard" => relations.wildcard = names(),
+                    "variants" => {
+                        relations.variants = parse_variants(&values).map_err(|err| format!("{file}:{n}: {err}"))?
+                    }
+                    "beside" => {
+                        let (target, variant, reach) = match values[..] {
+                            [target, variant] => (target, variant, "1"),
+                            [target, variant, reach] => (target, variant, reach),
+                            _ => return Err(format!("{file}:{n}: expected 'beside TERRAIN|other VARIANT [STEPS]'")),
+                        };
+                        let reach =
+                            reach.parse().ok().filter(|&reach| reach >= 1).ok_or_else(|| {
+                                format!("{file}:{n}: beside steps must be a whole number of at least 1")
+                            })?;
+                        let target =
+                            if target == "other" { Beside::Other } else { Beside::Terrain(target.to_string()) };
+                        relations.beside.push(BesideRule { target, variant: variant.to_string(), reach });
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{file}:{n}: unknown key '{key}'; expected secondary, tertiary, wildcard, variants or beside"
+                        ));
+                    }
                 }
             }
         }
@@ -223,7 +219,7 @@ mod tests {
         let palette =
             parse_palette("~ #1 coastal-water\n_ #2 sea\nc #3 clear\nf #4 light-forest\nF #5 heavy-forest\n", "p")
                 .unwrap();
-        Rules::parse(text, "r", &palette)
+        Rules::parse(&crate::defs::split(text, "r")?, "r", &palette)
     }
 
     const GOOD: &str = "# comment
