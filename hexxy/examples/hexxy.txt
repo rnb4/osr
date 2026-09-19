@@ -1,0 +1,111 @@
+# hexxy — how this map is drawn, all in one file.
+#
+# A line starting with # or // is a comment, and // also comments out the rest of a line.
+# Colours start with #, so # cannot be used partway along one.
+
+[palette]
+# <char> <color> [name]
+~ #78c7f5 water
+_ #4a90c2 sea
+g #95c763 clear
+f #4f8f3f forest
+F #2f6b28 heavy-forest
+h #b9a06a hills
+^ #8a8071 mountains
+s #9fbf8a swamp
+
+# --- what generate fills an atlas hex with -------------------------------------
+
+[terrain.water]
+secondary clear
+tertiary  forest
+variants  sea
+beside    other water 2      // a rim of shallows round every sea
+
+[terrain.clear]
+secondary forest
+tertiary  hills
+wildcard  swamp
+variants  clear
+
+[terrain.forest]
+secondary clear
+tertiary  hills
+wildcard  water
+variants  forest 2  heavy-forest
+
+[terrain.hills]
+secondary clear
+tertiary  mountains
+variants  hills
+
+[terrain.mountains]
+secondary hills
+tertiary  forest
+variants  mountains
+
+[terrain.swamp]
+secondary water
+tertiary  clear
+variants  swamp
+
+# --- what render draws the networks in -----------------------------------------
+
+[road.classes]
+# <char> <color> <width> <dash> [name]
+H #5a4630 0.13 none       highway
+R #6b4f2a 0.09 none       road
+t #6b4f2a 0.05 0.18,0.12  trail
+
+[border.types]
+# <char> <color> <width> <dash> [name]
+k #7a3b3b 0.08 none       kingdom
+d #555555 0.04 0.06,0.06  duchy
+
+# --- flag defaults; anything typed on the command line beats these -------------
+
+[grid]
+size    50
+color   #2b2b2b
+opacity 1
+// width 1.25          px; scales with the grid size when left out
+// background #f3ead8
+// draw false
+
+[atlas]
+// offset 1,4          overlay the parent atlas hexes from this sub-hex
+color   #241c14
+opacity 0.85
+
+[rivers]
+color     #78c7f5
+width     0.07
+max-width 0.22
+wander    0.4
+opacity   1
+mouth     M
+
+[roads]
+wander  0.25
+opacity 1
+
+[borders]
+opacity 1
+
+[icons]
+scale         0.66
+feature-scale 0.72
+
+[labels]
+color  #1b1b1b
+font   IM FELL English, Georgia, serif
+size   0.26
+weight normal
+style  normal
+
+[coords]
+// show center        top, center or bottom
+font    monospace
+size    0.2
+color   #000
+opacity 0.55
